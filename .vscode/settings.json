@@ -1,0 +1,14 @@
+{
+    "azureFunctions.deploySubpath": "azure-functions/queue-task",
+    "azureFunctions.scmDoBuildDuringDeployment": true,
+    "azureFunctions.pythonVenv": ".venv",
+    "azureFunctions.projectLanguage": "Python",
+    "azureFunctions.projectRuntime": "~4",
+    "debug.internalConsoleOptions": "neverOpen",
+    "azureFunctions.projectLanguageModel": 2,
+    "azureFunctions.projectSubpath": "azure-functions/queue-task",
+    "flake8.args": [
+        "--max-line-length=120"
+        ],
+        "python.analysis.typeCheckingMode": "basic",
+}
