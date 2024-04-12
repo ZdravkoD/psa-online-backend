@@ -15,6 +15,8 @@ env:
 jobs:
   build-azure-functions:
     runs-on: ubuntu-latest
+    environment:
+      name: 'staging'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -42,6 +44,8 @@ jobs:
 
   build-and-push-docker:
     runs-on: ubuntu-latest
+    environment:
+      name: 'staging'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
