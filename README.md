@@ -5,12 +5,11 @@ Backend code for Pharmacy Stock Automation.
 
 1. Install dependencies:
 ```bash
-brew tap azure/functions
-brew install azure-functions-core-tools@4
+cd azure-functions
+sudo npm install -g azure-functions-core-tools@4
 python -m venv .venv
 source .venv/bin/activate
 
-cd azure-functions
 pip install -r requirements.txt
 ```
 2. Start Azure Functions:

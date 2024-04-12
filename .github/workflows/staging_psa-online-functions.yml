@@ -27,7 +27,7 @@ jobs:
           python -m venv venv
           source venv/bin/activate
           find azure-functions -name requirements.txt -execdir pip install -r {} \;
-          zip -r release.zip azure-functions -x "*/venv/*"
+          zip -r release.zip azure-functions -x "*/venv/*" -x "*/.venv/*" -x "*/__pycache__/*" -x "*/local.settings.json" "*/.gitignore"
 
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v3
