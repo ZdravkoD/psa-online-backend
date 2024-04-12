@@ -9,9 +9,11 @@ on:
 env:
   AZURE_FUNCTIONAPP_PACKAGE_PATH: 'azure-functions' # set this to the path to your functions directory
   PYTHON_VERSION: '3.11' # set this to the python version to use
+  DOCKER_IMAGE_NAME: 'kfzzdravko/psa-online-scraper'
+  DOCKER_PLATFORM: 'linux/amd64' # set this for Docker build if needed
 
 jobs:
-  build:
+  build-azure-functions:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -38,9 +40,31 @@ jobs:
           name: python-app
           path: release.zip
 
-  deploy:
+  build-and-push-docker:
     runs-on: ubuntu-latest
-    needs: build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          push: true
+          tags: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          platforms: ${{ env.DOCKER_PLATFORM }}
+                    
+  deploy-azure-functions:
+    runs-on: ubuntu-latest
+    needs: build-azure-functions
     environment:
       name: 'staging'
       url: ${{ steps.deploy-to-function.outputs.webapp-url }}

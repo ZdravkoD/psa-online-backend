@@ -26,6 +26,7 @@ This repo uses Azure Cloud for its deployment.
 ### Azure Functions
 
 Used to implement the REST API.
+Link: [Azure Functions](https://portal.azure.com/#@kfzzdravkogmail.onmicrosoft.com/resource/subscriptions/7b4dbc02-6b4b-42bf-90b2-92d8ed681e87/resourceGroups/psa/providers/Microsoft.Web/sites/psa-online-functions/appServices)
 
 ### Azure CosmosDB
 
@@ -38,10 +39,12 @@ Storing all uploaded files by users.
 ### Azure Service Bus
 
 Used for task queues, retrying "dead" tasks, etc.
+Link: [Service Bus](https://portal.azure.com/#@kfzzdravkogmail.onmicrosoft.com/resource/subscriptions/7b4dbc02-6b4b-42bf-90b2-92d8ed681e87/resourceGroups/psa/providers/Microsoft.ServiceBus/namespaces/psa-online/queues/task-queue/explorer)
 
 ### Azure Container Instances
 
 For starting up Python Selenium workers that work on the tasks.
+Link: [Azure Container Instance](https://portal.azure.com/#@kfzzdravkogmail.onmicrosoft.com/resource/subscriptions/7b4dbc02-6b4b-42bf-90b2-92d8ed681e87/resourcegroups/psa/providers/Microsoft.ContainerInstance/containerGroups/psa-online-scraper/overview)
 
 ### Azure Static Web Apps
 
