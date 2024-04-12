@@ -33,7 +33,7 @@ jobs:
           zip -r release.zip azure-functions -x "*/venv/*" -x "*/.venv/*" -x "*/__pycache__/*" -x "*/local.settings.json" "*/.gitignore"
   
       - name: Upload artifact for deployment job
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: python-app
           path: release.zip
@@ -47,7 +47,7 @@ jobs:
 
     steps:
       - name: Download artifact from build job
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: python-app
 
