@@ -65,6 +65,7 @@ jobs:
           push: true
           tags: ${{ env.DOCKER_IMAGE_NAME }}:latest
           platforms: ${{ env.DOCKER_PLATFORM }}
+          context: ./scraper # This sets the Docker context to the 'scraper' directory
                     
   deploy-azure-functions:
     runs-on: ubuntu-latest
