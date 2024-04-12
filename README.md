@@ -1,7 +1,26 @@
 # psa-online-backend
 Backend code for Pharmacy Stock Automation.
 
-## Setup
+## Runing the Azure Functinos locally
+
+1. Install dependencies:
+```bash
+brew tap azure/functions
+brew install azure-functions-core-tools@4
+python -m venv .venv
+source .venv/bin/activate
+
+cd azure-functions
+pip install -r requirements.txt
+```
+2. Start Azure Functions:
+```bash
+cd azure-functions
+func start
+```
+
+
+## Infra Setup
 
 This repo uses Azure Cloud for its deployment.
 
