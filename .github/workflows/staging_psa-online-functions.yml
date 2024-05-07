@@ -30,6 +30,7 @@ jobs:
         run: |
           python -m venv venv
           source venv/bin/activate
+          python shared_lib/setup.py install
           find azure-functions -name requirements.txt -execdir pip install -r {} \;
 
       - name: Zip artifact for deployment
@@ -93,3 +94,60 @@ jobs:
           scm-do-build-during-deployment: true
           enable-oryx-build: true
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_A9BD903092ED444AB794B1B8EDB62D1D }}
+
+  build-and-test-scraper:
+    runs-on: ubuntu-latest
+    environment:
+      name: 'staging'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python version
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scraper/requirements.txt
+
+  deploy-scraper-to-aci:
+    runs-on: ubuntu-latest
+    needs: build-and-test-scraper
+    environment:
+      name: 'staging'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Build and push Docker image with timestamp tag
+        uses: docker/build-push-action@v5
+        with:
+          push: true
+          tags: ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
+          platforms: ${{ env.DOCKER_PLATFORM }}
+          context: ./scraper
+
+      - name: Stop existing Azure Container Instance
+        run: |
+          az container stop --name scraper-container --resource-group psa
+          az container wait --name scraper-container --resource-group psa --custom "containerProvisioningState!='Running'"
+
+      - name: Remove existing Azure Container Instance
+        run: az container delete --name scraper-container --resource-group psa --yes
+
+      - name: Deploy new Azure Container Instance
+        run: |
+          az container create \
+            --resource-group psa \
+            --name scraper-container \
+            --image ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} \
+            --environment-variables NEW_VAR='value' \
+            --restart-policy OnFailure

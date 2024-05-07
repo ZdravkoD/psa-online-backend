@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "@azure/web-pubsub": "^1.1.1"
+  }
+}

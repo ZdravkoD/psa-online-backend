@@ -1,6 +1,18 @@
 # psa-online-backend
 Backend code for Pharmacy Stock Automation.
 
+## Running locally
+
+## Install the shared_lib
+
+From the root folder:
+
+```bash
+make install-shared-lib
+```
+
+You need to do the above install step everytime you modify the shared_lib
+
 ## Runing the Azure Functinos locally
 
 1. Install dependencies:
@@ -50,4 +62,6 @@ Link: [Azure Container Instance](https://portal.azure.com/#@kfzzdravkogmail.onmi
 
 For deploying the React web app in repository psa-online-frontend
 
+### Azure Web PubSub
 
+For reporting real-time status from the Selenium worker to the web application.
