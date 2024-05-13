@@ -108,6 +108,12 @@ jobs:
           # }
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+
       - name: Build and push Docker image with timestamp tag
         uses: docker/build-push-action@v5
         with:
@@ -118,11 +124,48 @@ jobs:
 
       - name: Stop existing Azure Container Instance
         run: |
-          az container stop --name scraper-container --resource-group psa
-          az container wait --name scraper-container --resource-group psa --custom "containerProvisioningState!='Running'"
+          if az container show --name scraper-container --resource-group psa; then
+            echo "Container exists. Stopping it..."
+            az container stop --name scraper-container --resource-group psa
+          else
+            echo "Container does not exist. Skipping stop command."
+          fi
+
+      - name: Wait for container to stop
+        run: |
+          if ! az container show --name scraper-container --resource-group psa; then
+            echo "Container does not exist. Skipping wait command."
+            exit 0
+          fi
+          # Loop until the container is not in the 'Running' state
+          while true; do
+            # Get the current state of the container
+            state=$(az container show --name scraper-container --resource-group psa --query "containers[0].instanceView.currentState.state" -o tsv)
+            
+            echo "Current state: $state"
+  
+            # Break the loop if the state is 'Stopped'
+            if [ "$state" == "Stopped" ]; then
+              echo "Container has stopped."
+              break
+            elif [ "$state" == "Failed" ]; then
+              echo "Container provisioning failed."
+              exit 1
+            fi
+  
+            # Sleep for a while before polling again
+            echo "Waiting for container to stop..."
+            sleep 10
+          done
 
       - name: Remove existing Azure Container Instance
-        run: az container delete --name scraper-container --resource-group psa --yes
+        run: |
+          if az container show --name scraper-container --resource-group psa; then
+            echo "Container exists. Deleting it..."
+            az container delete --name scraper-container --resource-group psa --yes
+          else
+            echo "Container does not exist. Skipping delete command."
+          fi
 
       - name: Deploy new Azure Container Instance
         run: |
