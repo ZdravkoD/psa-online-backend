@@ -100,6 +100,12 @@ jobs:
       - name: Login to Azure
         uses: azure/login@v1
         with:
+          # {
+          #   "clientSecret":  "******",
+          #   "subscriptionId":  "******",
+          #   "tenantId":  "******",
+          #   "clientId":  "******"
+          # }
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Build and push Docker image with timestamp tag
