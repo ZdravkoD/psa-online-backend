@@ -1,0 +1,35 @@
+{
+    "name": "scraper-container",
+    "location": "francecentral",
+    "identity": {
+      "type": "UserAssigned",
+      "userAssignedIdentities": {
+        "/subscriptions/7b4dbc02-6b4b-42bf-90b2-92d8ed681e87/resourcegroups/psa/providers/Microsoft.ManagedIdentity/userAssignedIdentities/scraper-identity": {}
+      }
+    },
+    "properties": {
+      "containers": [
+        {
+          "name": "scraper-container",
+          "properties": {
+            "image": "${IMAGE_NAME}",
+            "resources": {
+              "requests": {
+                "cpu": 1,
+                "memoryInGB": 1.5
+              }
+            },
+            "environmentVariables": [
+              {
+                "name": "AZURE_SERVICE_BUS_CONNECTION_STRING",
+                "secureValue": "@Microsoft.KeyVault(SecretUri=https://psa-staging-kv.vault.azure.net/secrets/azure-service-bus-connection-string/6c9522f3d18746fe9f6f2d7f2a607729)"
+              }
+            ]
+          }
+        }
+      ],
+      "osType": "Linux",
+      "restartPolicy": "OnFailure"
+    }
+  }
+  

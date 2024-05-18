@@ -97,6 +97,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        with:
+          buildkitd-flags: --allow-insecure-entitlement security.insecure --allow-insecure-entitlement network.host
+
+      - name: Cache Docker layers
+        id: docker-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
       - name: Login to Azure
         uses: azure/login@v1
         with:
@@ -121,6 +135,11 @@ jobs:
           tags: ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
           platforms: ${{ env.DOCKER_PLATFORM }}
           context: ./scraper
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new
+
+      - name: Move new cache
+        run: (rm -rf /tmp/.buildx-cache && mv /tmp/.buildx-cache-new /tmp/.buildx-cache) || true
 
       - name: Stop existing Azure Container Instance
         run: |
@@ -145,7 +164,7 @@ jobs:
             echo "Current state: $state"
   
             # Break the loop if the state is 'Stopped'
-            if [ "$state" == "Stopped" ]; then
+            if [ "$state" == "Stopped" ] || [ "$state" == "Terminated" ]; then
               echo "Container has stopped."
               break
             elif [ "$state" == "Failed" ]; then
@@ -169,9 +188,9 @@ jobs:
 
       - name: Deploy new Azure Container Instance
         run: |
-          az container create \
-            --resource-group psa \
-            --name scraper-container \
-            --image ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} \
-            --environment-variables NEW_VAR='value' \
-            --restart-policy OnFailure
+          cd scraper
+          IMAGE_NAME=${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
+          # Replace placeholders in the template
+          sed "s|\${IMAGE_NAME}|${IMAGE_NAME}|g" aci-definition-template.json > aci-definition.json
+          # Create the container group using the dynamically generated JSON file
+          az container create --resource-group psa --file aci-definition.json

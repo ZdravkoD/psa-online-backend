@@ -29,4 +29,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY scraper .
 
 # Run app.py when the container launches
-CMD ["python", "main.py"]
+# Sleep for 10 seconds to allow the container to log the error messages
+CMD python main.py || sleep 10
