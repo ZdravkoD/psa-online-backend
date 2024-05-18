@@ -23,6 +23,34 @@
               {
                 "name": "AZURE_SERVICE_BUS_CONNECTION_STRING",
                 "secureValue": "@Microsoft.KeyVault(SecretUri=https://psa-staging-kv.vault.azure.net/secrets/azure-service-bus-connection-string/6c9522f3d18746fe9f6f2d7f2a607729)"
+              },
+              {
+                "name": "AZURE_SERVICE_BUS_QUEUE_NAME",
+                "value": "task-queue"
+              },
+              {
+                "name": "AZURE_SERVICE_BUS_TASK_UPDATES_QUEUE_NAME",
+                "value": "task-updates"
+              },
+              {
+                "name": "AZURE_BLOB_STORAGE_CONNECTION_STRING",
+                "secureValue": "@Microsoft.KeyVault(SecretUri=https://psa-staging-kv.vault.azure.net/secrets/azure-blob-storage-connection-string/eaf320a9d72a4f83ae5d41056a71561d)"
+              },
+              {
+                "name": "AZURE_BLOB_STORAGE_INPUT_FILES_CONTAINER_NAME",
+                "value": "input-files"
+              },
+              {
+                "name": "AZURE_BLOB_STORAGE_OUTPUT_FILES_CONTAINER_NAME",
+                "value": "output-files"
+              },
+              {
+                "name": "STING_CONFIG",
+                "secureValue": "@Microsoft.KeyVault(SecretUri=https://psa-staging-kv.vault.azure.net/secrets/sting-config/64103153b96b4b84bb1df4bb014371e1)"
+              },
+              {
+                "name": "PHOENIX_CONFIG",
+                "secureValue": "@Microsoft.KeyVault(SecretUri=https://psa-staging-kv.vault.azure.net/secrets/phoenix-config/175b84fc4f4d49b0b67aaa72a023dad3)"
               }
             ]
           }

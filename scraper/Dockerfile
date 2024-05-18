@@ -1,8 +1,9 @@
 # Use an official Python runtime as a parent image
 FROM python:3.8-slim
 
-ENV PYTHONUNBUFFERED 1
-ENV PYTHONDONTWRITEBYTECODE 1
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
 # Set the working directory in the container
 WORKDIR /usr/src/app
