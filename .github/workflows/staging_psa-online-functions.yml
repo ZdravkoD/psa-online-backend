@@ -187,11 +187,45 @@ jobs:
             echo "Container does not exist. Skipping delete command."
           fi
 
+      - name: Retrieve secrets from Key Vault
+        id: get-secrets
+        run: |
+          RESOURCE_GROUP="psa"
+          CONTAINER_GROUP_NAME="scraper-container"
+          CONTAINER_NAME="scraper-container"
+          KEY_VAULT_NAME="psa-staging-kv"
+
+          AZURE_SERVICE_BUS_CONNECTION_STRING=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name azure-service-bus-connection-string --query value -o tsv)
+          AZURE_BLOB_STORAGE_CONNECTION_STRING=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name azure-blob-storage-connection-string --query value -o tsv)
+          STING_CONFIG=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name sting-config --query value -o tsv)
+          PHOENIX_CONFIG=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name phoenix-config --query value -o tsv)
+          
+          echo "AZURE_SERVICE_BUS_CONNECTION_STRING=${AZURE_SERVICE_BUS_CONNECTION_STRING}" >> $GITHUB_ENV
+          echo "AZURE_BLOB_STORAGE_CONNECTION_STRING=${AZURE_BLOB_STORAGE_CONNECTION_STRING}" >> $GITHUB_ENV
+          echo "STING_CONFIG=${STING_CONFIG}" >> $GITHUB_ENV
+          echo "PHOENIX_CONFIG=${PHOENIX_CONFIG}" >> $GITHUB_ENV
+
       - name: Deploy new Azure Container Instance
         run: |
           cd scraper
           IMAGE_NAME=${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
+          CONTAINER_IDENTITY=/subscriptions/7b4dbc02-6b4b-42bf-90b2-92d8ed681e87/resourcegroups/psa/providers/Microsoft.ManagedIdentity/userAssignedIdentities/scraper-identity
           # Replace placeholders in the template
-          sed "s|\${IMAGE_NAME}|${IMAGE_NAME}|g" aci-definition-template.json > aci-definition.json
+          # sed "s|\${IMAGE_NAME}|${IMAGE_NAME}|g" aci-definition-template.json > aci-definition.json
           # Create the container group using the dynamically generated JSON file
-          az container create --resource-group psa --file aci-definition.json
+          # az container create --resource-group psa --file aci-definition.json
+          az container create \
+            --resource-group psa \
+            --name scraper-container \
+            --image ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} \
+            --environment-variables \
+              AZURE_SERVICE_BUS_CONNECTION_STRING=$AZURE_SERVICE_BUS_CONNECTION_STRING \
+              AZURE_SERVICE_BUS_QUEUE_NAME="task-queue" \
+              AZURE_SERVICE_BUS_TASK_UPDATES_QUEUE_NAME="task-updates" \
+              AZURE_BLOB_STORAGE_CONNECTION_STRING=$AZURE_BLOB_STORAGE_CONNECTION_STRING \
+              AZURE_BLOB_STORAGE_INPUT_FILES_CONTAINER_NAME="input-files" \
+              AZURE_BLOB_STORAGE_OUTPUT_FILES_CONTAINER_NAME="output-files" \
+              STING_CONFIG=$STING_CONFIG \
+              PHOENIX_CONFIG=$PHOENIX_CONFIG \
+            --cpu 1 --memory 1.5 \
+            --assign-identity $CONTAINER_IDENTITY
