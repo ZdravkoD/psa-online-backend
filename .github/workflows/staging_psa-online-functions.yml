@@ -212,8 +212,8 @@ jobs:
           IMAGE_NAME=${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
           CONTAINER_IDENTITY=/subscriptions/7b4dbc02-6b4b-42bf-90b2-92d8ed681e87/resourcegroups/psa/providers/Microsoft.ManagedIdentity/userAssignedIdentities/scraper-identity
           # Properly escape JSON strings for environment variables
-          ESCAPED_STING_CONFIG=$(echo ${{ env.STING_CONFIG }} | jq -sRr @json)
-          ESCAPED_PHOENIX_CONFIG=$(echo ${{ env.PHOENIX_CONFIG }} | jq -sRr @json)          
+          ESCAPED_STING_CONFIG=$(echo '${{ env.STING_CONFIG }}' | jq -sRr @json)
+          ESCAPED_PHOENIX_CONFIG=$(echo '${{ env.PHOENIX_CONFIG }}' | jq -sRr @json)          
 
           az container create \
             --resource-group psa \
