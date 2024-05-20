@@ -14,6 +14,7 @@ env:
 
 jobs:
   build-azure-functions:
+    if: contains(github.event.head_commit.message, 'azure-functions') || contains(github.event.head_commit.message, 'shared_lib')
     runs-on: ubuntu-latest
     environment:
       name: 'staging'

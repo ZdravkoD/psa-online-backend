@@ -106,6 +106,7 @@ class UserList:
         self.load_users(json_data)
 
     def load_users(self, json_data):
+        print("Loading users from JSON data:", json_data)
         # Load user data from JSON, which is a string in JSON format
         user_data = json.loads(json_data) if isinstance(json_data, str) else json_data
         for user_dict in user_data:
