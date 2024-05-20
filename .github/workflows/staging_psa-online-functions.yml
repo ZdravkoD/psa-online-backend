@@ -115,6 +115,7 @@ jobs:
       - name: Login to Azure
         uses: azure/login@v1
         with:
+          # az ad sp show --id 45f08d0f-5389-4fef-9c35-78f119d355ac
           # {
           #   "clientSecret":  "******",
           #   "subscriptionId":  "******",
@@ -210,10 +211,10 @@ jobs:
           cd scraper
           IMAGE_NAME=${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
           CONTAINER_IDENTITY=/subscriptions/7b4dbc02-6b4b-42bf-90b2-92d8ed681e87/resourcegroups/psa/providers/Microsoft.ManagedIdentity/userAssignedIdentities/scraper-identity
-          # Replace placeholders in the template
-          # sed "s|\${IMAGE_NAME}|${IMAGE_NAME}|g" aci-definition-template.json > aci-definition.json
-          # Create the container group using the dynamically generated JSON file
-          # az container create --resource-group psa --file aci-definition.json
+          # Properly escape JSON strings for environment variables
+          ESCAPED_STING_CONFIG=$(echo ${{ env.STING_CONFIG }} | jq -sRr @json)
+          ESCAPED_PHOENIX_CONFIG=$(echo ${{ env.PHOENIX_CONFIG }} | jq -sRr @json)          
+
           az container create \
             --resource-group psa \
             --name scraper-container \
@@ -225,7 +226,7 @@ jobs:
               AZURE_BLOB_STORAGE_CONNECTION_STRING=$AZURE_BLOB_STORAGE_CONNECTION_STRING \
               AZURE_BLOB_STORAGE_INPUT_FILES_CONTAINER_NAME="input-files" \
               AZURE_BLOB_STORAGE_OUTPUT_FILES_CONTAINER_NAME="output-files" \
-              STING_CONFIG=$STING_CONFIG \
-              PHOENIX_CONFIG=$PHOENIX_CONFIG \
+              STING_CONFIG=$ESCAPED_STING_CONFIG \
+              PHOENIX_CONFIG=$ESCAPED_PHOENIX_CONFIG \
             --cpu 1 --memory 1.5 \
             --assign-identity $CONTAINER_IDENTITY
