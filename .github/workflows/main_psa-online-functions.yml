@@ -14,6 +14,7 @@ env:
 
 jobs:
   build-azure-functions:
+    if: contains(github.event.head_commit.message, 'azure-functions') || contains(github.event.head_commit.message, 'shared_lib')
     runs-on: ubuntu-latest
     environment:
       name: 'production'
@@ -30,6 +31,7 @@ jobs:
         run: |
           python -m venv venv
           source venv/bin/activate
+          python shared_lib/setup.py install
           find azure-functions -name requirements.txt -execdir pip install -r {} \;
 
       - name: Zip artifact for deployment
@@ -41,31 +43,6 @@ jobs:
         with:
           name: python-app
           path: release.zip
-
-  build-and-push-docker:
-    runs-on: ubuntu-latest
-    environment:
-      name: 'production'
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME }}
-          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          push: true
-          tags: ${{ env.DOCKER_IMAGE_NAME }}:latest
-          platforms: ${{ env.DOCKER_PLATFORM }}
-          context: ./scraper # This sets the Docker context to the 'scraper' directory
                     
   deploy-azure-functions:
     runs-on: ubuntu-latest
@@ -93,3 +70,164 @@ jobs:
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_3289E370F5D742B4A1579675721B73BA }}
           scm-do-build-during-deployment: true
           enable-oryx-build: true
+
+  build-and-test-scraper:
+    if: contains(github.event.head_commit.message, 'scraper') || contains(github.event.head_commit.message, 'shared_lib')
+    runs-on: ubuntu-latest
+    environment:
+      name: 'production'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python version
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scraper/requirements.txt
+
+  deploy-scraper-to-aci:
+    runs-on: ubuntu-latest
+    needs: build-and-test-scraper
+    environment:
+      name: 'production'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        with:
+          buildkitd-flags: --allow-insecure-entitlement security.insecure --allow-insecure-entitlement network.host
+
+      - name: Cache Docker layers
+        id: docker-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Login to Azure
+        uses: azure/login@v1
+        with:
+          # az ad sp show --id 45f08d0f-5389-4fef-9c35-78f119d355ac
+          # {
+          #   "clientSecret":  "******",
+          #   "subscriptionId":  "******",
+          #   "tenantId":  "******",
+          #   "clientId":  "******"
+          # }
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+
+      - name: Build and push Docker image with timestamp tag
+        uses: docker/build-push-action@v5
+        with:
+          push: true
+          tags: ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
+          platforms: ${{ env.DOCKER_PLATFORM }}
+          context: ./scraper
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new
+
+      - name: Move new cache
+        run: (rm -rf /tmp/.buildx-cache && mv /tmp/.buildx-cache-new /tmp/.buildx-cache) || true
+
+      - name: Stop existing Azure Container Instance
+        run: |
+          if az container show --name scraper-container --resource-group psa; then
+            echo "Container exists. Stopping it..."
+            az container stop --name scraper-container --resource-group psa
+          else
+            echo "Container does not exist. Skipping stop command."
+          fi
+
+      - name: Wait for container to stop
+        run: |
+          if ! az container show --name scraper-container --resource-group psa; then
+            echo "Container does not exist. Skipping wait command."
+            exit 0
+          fi
+          # Loop until the container is not in the 'Running' state
+          while true; do
+            # Get the current state of the container
+            state=$(az container show --name scraper-container --resource-group psa --query "containers[0].instanceView.currentState.state" -o tsv)
+            
+            echo "Current state: $state"
+  
+            # Break the loop if the state is 'Stopped'
+            if [ "$state" == "Stopped" ] || [ "$state" == "Terminated" ]; then
+              echo "Container has stopped."
+              break
+            elif [ "$state" == "Failed" ]; then
+              echo "Container provisioning failed."
+              exit 1
+            fi
+  
+            # Sleep for a while before polling again
+            echo "Waiting for container to stop..."
+            sleep 10
+          done
+
+      - name: Remove existing Azure Container Instance
+        run: |
+          if az container show --name scraper-container --resource-group psa; then
+            echo "Container exists. Deleting it..."
+            az container delete --name scraper-container --resource-group psa --yes
+          else
+            echo "Container does not exist. Skipping delete command."
+          fi
+
+      - name: Retrieve secrets from Key Vault
+        id: get-secrets
+        run: |
+          RESOURCE_GROUP="psa"
+          CONTAINER_GROUP_NAME="scraper-container"
+          CONTAINER_NAME="scraper-container"
+          KEY_VAULT_NAME="kv-psa-production"
+
+          AZURE_SERVICE_BUS_CONNECTION_STRING=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name azure-service-bus-connection-string --query value -o tsv)
+          AZURE_BLOB_STORAGE_CONNECTION_STRING=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name azure-blob-storage-connection-string --query value -o tsv)
+          STING_CONFIG=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name sting-config --query value -o tsv)
+          PHOENIX_CONFIG=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name phoenix-config --query value -o tsv)
+          
+          echo "AZURE_SERVICE_BUS_CONNECTION_STRING=${AZURE_SERVICE_BUS_CONNECTION_STRING}" >> $GITHUB_ENV
+          echo "AZURE_BLOB_STORAGE_CONNECTION_STRING=${AZURE_BLOB_STORAGE_CONNECTION_STRING}" >> $GITHUB_ENV
+          echo "STING_CONFIG=${STING_CONFIG}" >> $GITHUB_ENV
+          echo "PHOENIX_CONFIG=${PHOENIX_CONFIG}" >> $GITHUB_ENV
+
+      - name: Deploy new Azure Container Instance
+        run: |
+          cd scraper
+          IMAGE_NAME=${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
+          CONTAINER_IDENTITY=/subscriptions/7b4dbc02-6b4b-42bf-90b2-92d8ed681e87/resourcegroups/psa/providers/Microsoft.ManagedIdentity/userAssignedIdentities/scraper-identity
+          # Properly escape JSON strings for environment variables
+          ESCAPED_STING_CONFIG=$(echo '${{ env.STING_CONFIG }}' | jq -sRr @json)
+          ESCAPED_PHOENIX_CONFIG=$(echo '${{ env.PHOENIX_CONFIG }}' | jq -sRr @json)          
+
+          az container create \
+            --resource-group psa \
+            --name scraper-container \
+            --image ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} \
+            --environment-variables \
+              AZURE_SERVICE_BUS_CONNECTION_STRING=$AZURE_SERVICE_BUS_CONNECTION_STRING \
+              AZURE_SERVICE_BUS_QUEUE_NAME="task-queue" \
+              AZURE_SERVICE_BUS_TASK_UPDATES_QUEUE_NAME="task-updates" \
+              AZURE_BLOB_STORAGE_CONNECTION_STRING=$AZURE_BLOB_STORAGE_CONNECTION_STRING \
+              AZURE_BLOB_STORAGE_INPUT_FILES_CONTAINER_NAME="input-files" \
+              AZURE_BLOB_STORAGE_OUTPUT_FILES_CONTAINER_NAME="output-files" \
+              STING_CONFIG=$ESCAPED_STING_CONFIG \
+              PHOENIX_CONFIG=$ESCAPED_PHOENIX_CONFIG \
+            --cpu 1 --memory 1.5 \
+            --assign-identity $CONTAINER_IDENTITY
