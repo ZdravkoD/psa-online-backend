@@ -8,7 +8,16 @@ on:
     branches:
       - staging
   workflow_dispatch:
-
+    inputs:
+      force_run_azure_functions_jobs:
+        description: 'Force run Azure Functions jobs'
+        required: false
+        default: 'false'
+      force_run_aci_jobs:
+        description: 'Force run Azure Container Instance jobs'
+        required: false
+        default: 'false'
+  
 env:
   AZURE_FUNCTIONAPP_PACKAGE_PATH: 'azure-functions' # set this to the path to your functions directory
   PYTHON_VERSION: '3.11' # set this to the python version to use
@@ -17,7 +26,7 @@ env:
 
 jobs:
   build-azure-functions:
-    if: contains(github.event.head_commit.message, 'azure-functions') || contains(github.event.head_commit.message, 'shared_lib')
+    if: github.event.inputs.force_run_azure_functions_jobs == 'true' || contains(github.event.head_commit.message, 'azure-functions') || contains(github.event.head_commit.message, 'shared_lib')
     runs-on: ubuntu-latest
     environment:
       name: 'staging'
@@ -75,7 +84,7 @@ jobs:
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_A9BD903092ED444AB794B1B8EDB62D1D }}
 
   build-and-test-scraper:
-    if: contains(github.event.head_commit.message, 'scraper') || contains(github.event.head_commit.message, 'shared_lib')
+    if: github.event.inputs.force_run_aci_jobs == 'true' || contains(github.event.head_commit.message, 'scraper') || contains(github.event.head_commit.message, 'shared_lib')
     runs-on: ubuntu-latest
     environment:
       name: 'staging'
