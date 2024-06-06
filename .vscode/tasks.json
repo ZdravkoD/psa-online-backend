@@ -9,7 +9,7 @@
 			"isBackground": true,
 			"dependsOn": "pip install (functions)",
 			"options": {
-				"cwd": "${workspaceFolder}/azure-functions"
+				"cwd": "${workspaceFolder}/azure-functions",
 			}
 		},
 		{
