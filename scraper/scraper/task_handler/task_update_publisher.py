@@ -4,7 +4,7 @@ from azure.servicebus import ServiceBusClient, ServiceBusMessage
 from bson import ObjectId
 
 from configuration.common import AzureConfig
-from shared_lib.messaging.messaging import ScraperTaskUpdates, TaskStatus
+from messaging import ScraperTaskUpdates, TaskStatus
 
 
 class TaskUpdatePublisher:

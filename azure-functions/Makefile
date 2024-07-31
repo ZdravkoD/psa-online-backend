@@ -10,3 +10,6 @@ start: ## Start the Azure Functions
 
 install: ## Install the Azure Functions
 	@pip install -r requirements.txt
+
+deploy-staging: ## Deploy the Azure Functions to staging
+	@func azure functionapp publish psa-online-functions --slot staging

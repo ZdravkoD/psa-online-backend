@@ -11,16 +11,6 @@ source ./.venv/bin/activate
 ```
 
 
-## Install the shared_lib
-
-From the root folder:
-
-```bash
-make install-shared-lib
-```
-
-You need to do the above install step everytime you modify the shared_lib
-
 ## Runing the Azure Functinos locally
 
 1. Install dependencies:

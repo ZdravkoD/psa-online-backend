@@ -5,7 +5,7 @@ from typing import List
 from azure.servicebus import ServiceBusClient, ServiceBusReceivedMessage
 
 from configuration.common import AzureConfig
-from shared_lib.messaging.messaging import ScraperTaskItem
+from messaging import ScraperTaskItem
 from task_handler.task_handler import TaskHandler
 
 shutdown_event = threading.Event()

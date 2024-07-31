@@ -23,7 +23,7 @@ env:
 
 jobs:
   build-azure-functions:
-    if: github.event.inputs.force_run_azure_functions_jobs == 'true' || contains(github.event.head_commit.message, 'azure-functions') || contains(github.event.head_commit.message, 'shared_lib')
+    if: github.event.inputs.force_run_azure_functions_jobs == 'true' || contains(github.event.head_commit.message, 'azure-functions')
     runs-on: ubuntu-latest
     environment:
       name: 'production'
@@ -40,7 +40,6 @@ jobs:
         run: |
           python -m venv venv
           source venv/bin/activate
-          python shared_lib/setup.py install
           find azure-functions -name requirements.txt -execdir pip install -r {} \;
 
       - name: Zip artifact for deployment
@@ -81,7 +80,7 @@ jobs:
           enable-oryx-build: true
 
   build-and-test-scraper:
-    if: github.event.inputs.force_run_aci_jobs == 'true' || contains(github.event.head_commit.message, 'scraper') || contains(github.event.head_commit.message, 'shared_lib')
+    if: github.event.inputs.force_run_aci_jobs == 'true' || contains(github.event.head_commit.message, 'scraper')
     runs-on: ubuntu-latest
     environment:
       name: 'production'

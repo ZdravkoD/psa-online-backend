@@ -4,7 +4,7 @@ import math
 from typing import List
 
 from selenium.common.exceptions import StaleElementReferenceException
-from shared_lib.messaging.messaging import ScraperTaskItem
+from messaging import ScraperTaskItem
 from pharmacy_distributors.common.browser_common import BrowserCommon
 from pharmacy_distributors.sting.sting import StingPharma
 from pharmacy_distributors.phoenix.phoenix_optimized import PhoenixPharmaOptimized
