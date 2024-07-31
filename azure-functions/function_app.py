@@ -12,10 +12,10 @@ from pubsub_client import AzureWebPubSubServiceClient
 from werkzeug.utils import secure_filename
 
 from cosmosdb_client import CosmosDbClient
-from shared_lib.messaging.messaging import FileType, ScraperTaskActionType, ScraperTaskItem, ScraperTaskUpdates, TaskStatus
+from messaging import FileType, ScraperTaskActionType, ScraperTaskItem, ScraperTaskUpdates, TaskStatus
+from json_encoder import CustomJSONEncoder
 
 app = func.FunctionApp()
-cosmosDbClient = CosmosDbClient()
 
 
 @app.route(route="task", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
@@ -115,6 +115,7 @@ def _create_task_json_content(req: func.HttpRequest) -> func.HttpResponse:
         distributors=distributors,
         task_type=ScraperTaskActionType.START_OVER
     )
+    cosmosDbClient = CosmosDbClient()
     inserted_id = cosmosDbClient.create_item("tasks", task_item.to_json())
     task_item.id = inserted_id
 
@@ -201,6 +202,7 @@ def _create_task_file_content(req: func.HttpRequest) -> func.HttpResponse:
         task_type=ScraperTaskActionType.START_OVER
     )
 
+    cosmosDbClient = CosmosDbClient()
     inserted_id = cosmosDbClient.create_item("tasks", task_item.to_json())
     task_item.id = inserted_id
 
@@ -210,7 +212,7 @@ def _create_task_file_content(req: func.HttpRequest) -> func.HttpResponse:
 
 
 @app.route(route="task", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
-def get_task(req: func.HttpRequest) -> func.HttpResponse:
+def task(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request to get a task.')
 
     task_id = req.params.get('id')
@@ -220,6 +222,7 @@ def get_task(req: func.HttpRequest) -> func.HttpResponse:
             status_code=400
         )
 
+    cosmosDbClient = CosmosDbClient()
     task = cosmosDbClient.read_item_by_id("tasks", task_id)
     if not task:
         return func.HttpResponse(
@@ -231,18 +234,20 @@ def get_task(req: func.HttpRequest) -> func.HttpResponse:
 
 
 @app.route(route="tasks", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
-def get_tasks(req: func.HttpRequest) -> func.HttpResponse:
+def tasks(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request to get all tasks.')
 
+    cosmosDbClient = CosmosDbClient()
     tasks = cosmosDbClient.read_items("tasks", {})
 
-    return func.HttpResponse(body=json.dumps(tasks), status_code=200, mimetype="application/json")
+    return func.HttpResponse(body=json.dumps(tasks, cls=CustomJSONEncoder), status_code=200, mimetype="application/json")
 
 
 @app.route(route="pharmacies", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
 def get_pharmacies(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request to get all pharmacies.')
 
+    cosmosDbClient = CosmosDbClient()
     tasks = cosmosDbClient.read_items("pharmacies", {})
 
     return func.HttpResponse(body=json.dumps(tasks), status_code=200, mimetype="application/json")
@@ -252,6 +257,7 @@ def get_pharmacies(req: func.HttpRequest) -> func.HttpResponse:
 def get_distributors(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request to get all distributors.')
 
+    cosmosDbClient = CosmosDbClient()
     tasks = cosmosDbClient.read_items("distributors", {})
 
     return func.HttpResponse(body=json.dumps(tasks), status_code=200, mimetype="application/json")
@@ -344,6 +350,7 @@ def servicebus_trigger__task_updates(msg: func.ServiceBusMessage):
     msg_object: dict = json.loads(msg.get_body().decode())
 
     print("ULALA:", json.dumps(msg_object))
+    cosmosDbClient = CosmosDbClient()
     task: ScraperTaskItem = ScraperTaskItem.from_dict(cosmosDbClient.read_item_by_id("tasks", msg_object.get("task_id")) or {})
     print("DANET:", json.dumps(task.to_json()))
     if msg_object.get("status") == TaskStatus.FINAL_REPORT:

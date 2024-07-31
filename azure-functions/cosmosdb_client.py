@@ -26,7 +26,7 @@ class CosmosDbClient:
         self.client = MongoClient(connection_string)
         self.database = self.client.get_database("psa")
 
-    def read_items(self, collection_name, query):
+    def read_items(self, collection_name: str, query: dict):
         if self.database is None:
             raise ValueError("Database is not initialized")
         collection = self.database[collection_name]
