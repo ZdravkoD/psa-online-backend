@@ -7,3 +7,6 @@ help: ## Show this help message
 
 start: ## Start the Azure Functions
 	@func host start
+
+install: ## Install the Azure Functions
+	@pip install -r requirements.txt

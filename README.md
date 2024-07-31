@@ -3,6 +3,14 @@ Backend code for Pharmacy Stock Automation.
 
 ## Running locally
 
+
+### Start Python in a venv
+
+```bash
+source ./.venv/bin/activate
+```
+
+
 ## Install the shared_lib
 
 From the root folder:
@@ -18,7 +26,9 @@ You need to do the above install step everytime you modify the shared_lib
 1. Install dependencies:
 ```bash
 cd azure-functions
-sudo npm install -g azure-functions-core-tools@4
+brew tap azure/functions
+brew install azure-functions-core-tools@4
+
 python -m venv .venv
 source .venv/bin/activate
 

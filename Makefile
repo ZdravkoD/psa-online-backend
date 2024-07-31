@@ -1,5 +1,7 @@
 .PHONY: help docker-build docker-run docker-stop
 
+VENV_PYTHON := .venv/bin/python3.12
+
 default: help
 
 help: ## Show this help message
@@ -7,3 +9,12 @@ help: ## Show this help message
 
 install-shared-lib: ## Install shared library in venv
 	@python shared_lib/setup.py install
+
+start-azure-functions: ## Start Azure Functions
+	@pushd azure-functions && make start && popd > /dev/null
+
+start-scraper: ## Start scraper
+	@(cd scraper && $(MAKE) -f Makefile start)
+
+python-test:
+	@$(VENV_PYTHON) --version
