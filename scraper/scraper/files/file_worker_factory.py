@@ -1,7 +1,7 @@
 from files.excel_worker import ExcelWorker
 from files.file_worker import FileWorker
 from files.json_content_worker import JsonContentWorker
-from messaging import FileType
+from messaging.messaging import FileType
 
 
 class FileWorkerFactory:
