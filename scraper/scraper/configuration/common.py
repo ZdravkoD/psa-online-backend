@@ -109,10 +109,11 @@ class UserList:
         print("Loading users from JSON data:", json_data, "Type:", type(json_data))
         # Load user data from JSON, which is a string in JSON format
         # Check if json_data is a string, if so, parse it to JSON
-        if isinstance(json_data, str):
-            user_data = json.loads(json_data)
-        else:
-            user_data = json_data
+        while isinstance(json_data, str):
+            json_data = json.loads(json_data)
+
+        user_data = json_data
+
         print("user_data:", user_data, "Type:", type(user_data))
 
         for user_dict in user_data:
