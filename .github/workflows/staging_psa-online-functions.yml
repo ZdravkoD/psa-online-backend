@@ -92,7 +92,10 @@ jobs:
           echo "Added files: ${{ github.event.head_commit.added }}"
           echo "Modified files: ${{ github.event.head_commit.modified }}"
           echo "Removed files: ${{ github.event.head_commit.removed }}"
-
+      - name: Dump GitHub Context
+        env:
+          GITHUB_CONTEXT: ${{ toJson(github) }}
+        run: echo "$GITHUB_CONTEXT"
 
   build-and-test-scraper:
     if: github.event.inputs.force_run_aci_jobs == 'true' || github.event.head_commit.added.* == 'scraper/**' || github.event.head_commit.modified.* == 'scraper/**' || github.event.head_commit.removed.* == 'scraper/**'
