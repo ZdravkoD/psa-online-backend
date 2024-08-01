@@ -144,7 +144,7 @@ class DistributorConfig:
         "INIT_CONFIG_FROM", "init_config_from", "distributor-config.json", "env"
     )
     COSMOS_DB_CONNECTION_STRING = get_variable(
-        "COSMOS_DB_CONNECTION_STRING", "connection_string", "distributor-config.json"
+        "AZURE_COSMOS_DB_CONNECTION_STRING", "connection_string", "distributor-config.json"
     )
     COSMOS_DB_PRIMARY_KEY = get_variable(
         "COSMOS_DB_PRIMARY_KEY", "primary_key", "distributor-config.json"
