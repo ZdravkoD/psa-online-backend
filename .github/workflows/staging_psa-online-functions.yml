@@ -39,7 +39,7 @@ jobs:
       - name: Get list of directories with changes
         id: get_changed_dirs
         run: |
-          CHANGED_DIRS=$(git diff --name-only HEAD^ HEAD | xargs -I {} dirname {} | sort | uniq)
+          CHANGED_DIRS=$(git diff --name-only HEAD^ HEAD | xargs -I {} dirname {} | sort | uniq | tr '\n' ';')
           echo "Changed directories:"
           echo "$CHANGED_DIRS"
           echo "changed_dirs=$CHANGED_DIRS" >> $GITHUB_OUTPUT
@@ -47,7 +47,7 @@ jobs:
       - name: Check if scraper or workflow files changed
         id: check_scraper_should_run
         run: |
-          if echo "${{ steps.get_changed_dirs.outputs.changed_dirs }}" | grep -qE '(^| )scraper($| )|(^| )\.github/workflows($| )'; then
+          if echo "${{ steps.get_changed_dirs.outputs.changed_dirs }}" | grep -qE 'scraper.*|\.github/workflows.*'; then
             echo "scraper_should_run=true" >> $GITHUB_OUTPUT
             echo "scraper_should_run=true"
           else
@@ -135,7 +135,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Python version
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 

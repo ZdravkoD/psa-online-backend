@@ -3,10 +3,9 @@ from datetime import datetime
 from typing import Tuple
 
 from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
-from pharmacy_distributors.common.utils import check_webdriver_is_present
+from pharmacy_distributors.common.utils import check_webdriver_is_present, get_browser_options
 
 
 class BrowserCommon():
@@ -20,12 +19,7 @@ class BrowserCommon():
         # Raises WebDriverException if the driver is not available
         check_webdriver_is_present()
 
-        options = Options()
-        # options.add_argument('--headless')  # Run headless Chromium
-        # options.add_argument('--no-sandbox')  # Bypass OS security model
-        # options.add_argument('--disable-dev-shm-usage')  # Overcome limited resource problems
-        options.add_experimental_option('excludeSwitches', ['enable-logging'])
-        self.browser = webdriver.Chrome(options)
+        self.browser = webdriver.Chrome(get_browser_options())
 
     def hasInternetConnection(self):
         try:
