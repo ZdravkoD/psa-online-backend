@@ -147,7 +147,7 @@ class PhoenixPharma(BrowserCommon):
         product_name = product_name[:product_name.find("\n")+1]
         return product_name
 
-    def get_product_name_and_price(self, productSearchNames: list) -> tuple[str, float]:
+    def get_product_name_and_price(self, productSearchNames: list) -> Tuple[str, float]:
         print("PhoenixPharma:get_product_name_and_price(): productSearchNames=" + str(productSearchNames))
         element = None
         for productName in productSearchNames:

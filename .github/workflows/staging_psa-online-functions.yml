@@ -82,6 +82,18 @@ jobs:
           enable-oryx-build: true
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_A9BD903092ED444AB794B1B8EDB62D1D }}
 
+  test-ci-stuff:
+    runs-on: ubuntu-latest
+    environment:
+      name: 'staging'
+    steps:
+      - name: Check changed files
+        run: |
+          echo "Added files: ${{ github.event.head_commit.added }}"
+          echo "Modified files: ${{ github.event.head_commit.modified }}"
+          echo "Removed files: ${{ github.event.head_commit.removed }}"
+
+
   build-and-test-scraper:
     if: github.event.inputs.force_run_aci_jobs == 'true' || github.event.head_commit.added.* == 'scraper/**' || github.event.head_commit.modified.* == 'scraper/**' || github.event.head_commit.removed.* == 'scraper/**'
     runs-on: ubuntu-latest

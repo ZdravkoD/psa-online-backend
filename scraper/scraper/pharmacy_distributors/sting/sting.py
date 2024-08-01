@@ -1,6 +1,7 @@
 import logging
 import math
 import time
+from typing import Tuple
 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -182,7 +183,7 @@ class StingPharma(BrowserCommon):
             # if self.hasInternetConnection() == False:
             self.refresh_page()
 
-    def get_product_name_and_price(self, productSearchNames: list) -> tuple[str, float]:
+    def get_product_name_and_price(self, productSearchNames: list) -> Tuple[str, float]:
         for productName in productSearchNames:
             logging.info("StingPharma.get_product_name_and_price(): Searching for product: '" + productName + "'...")
             element = self._search_for_product(productName)

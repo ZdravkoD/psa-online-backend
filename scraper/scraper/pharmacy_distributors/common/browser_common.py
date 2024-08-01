@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+from typing import Tuple
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -41,7 +42,7 @@ class BrowserCommon():
         print("BrowserCommon: Storing Screenshot: %s", screenShotName)
         self.browser.save_screenshot(screenShotName)
 
-    def getScreenshot(self) -> tuple[bytes, str]:
+    def getScreenshot(self) -> Tuple[bytes, str]:
         print("BrowserCommon: Getting Screenshot...")
         dt_string = datetime.now().strftime("%Y.%m.%d_%H.%M.%S")
         screenShotName = dt_string + "_" + self.__class__.__name__ + "_ScreenshotOnException.png"
@@ -63,7 +64,7 @@ class BrowserCommon():
     def refresh_page(self):
         raise NotImplementedError("Subclasses must implement this method")
 
-    def get_product_name_and_price(self, product_id) -> tuple[str, float]:
+    def get_product_name_and_price(self, product_id) -> Tuple[str, float]:
         raise NotImplementedError("Subclasses must implement this method")
 
     def add_product_to_cart(self, product_id: str, quantity: int):
