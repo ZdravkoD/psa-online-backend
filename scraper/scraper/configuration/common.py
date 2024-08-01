@@ -1,6 +1,6 @@
 import json
 import os
-from typing import List
+from typing import List, Union
 from dotenv import load_dotenv
 
 from psa_logger.logger import get_logger
@@ -101,14 +101,20 @@ class User:
 
 
 class UserList:
-    def __init__(self, json_data):
+    def __init__(self, json_data: Union[str, List[dict]]):
         self.users: List[User] = []
         self.load_users(json_data)
 
-    def load_users(self, json_data):
-        print("Loading users from JSON data:", json_data)
+    def load_users(self, json_data: Union[str, List[dict]]):
+        print("Loading users from JSON data:", json_data, "Type:", type(json_data))
         # Load user data from JSON, which is a string in JSON format
-        user_data = json.loads(json_data) if isinstance(json_data, str) else json_data
+        # Check if json_data is a string, if so, parse it to JSON
+        if isinstance(json_data, str):
+            user_data = json.loads(json_data)
+        else:
+            user_data = json_data
+        print("user_data:", user_data, "Type:", type(user_data))
+
         for user_dict in user_data:
             user = User(id=user_dict['id'], username=user_dict['username'], password=user_dict['password'])
             self.users.append(user)
