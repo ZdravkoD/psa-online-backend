@@ -207,11 +207,13 @@ jobs:
 
           AZURE_SERVICE_BUS_CONNECTION_STRING=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name azure-service-bus-connection-string --query value -o tsv)
           AZURE_BLOB_STORAGE_CONNECTION_STRING=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name azure-blob-storage-connection-string --query value -o tsv)
+          AZURE_COSMOS_DB_CONNECTION_STRING=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name azure-cosmos-db-connection-string --query value -o tsv)
           STING_CONFIG=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name sting-config --query value -o tsv)
           PHOENIX_CONFIG=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name phoenix-config --query value -o tsv)
           
           echo "AZURE_SERVICE_BUS_CONNECTION_STRING=${AZURE_SERVICE_BUS_CONNECTION_STRING}" >> $GITHUB_ENV
           echo "AZURE_BLOB_STORAGE_CONNECTION_STRING=${AZURE_BLOB_STORAGE_CONNECTION_STRING}" >> $GITHUB_ENV
+          echo "AZURE_COSMOS_DB_CONNECTION_STRING=${AZURE_COSMOS_DB_CONNECTION_STRING}" >> $GITHUB_ENV
           echo "STING_CONFIG=${STING_CONFIG}" >> $GITHUB_ENV
           echo "PHOENIX_CONFIG=${PHOENIX_CONFIG}" >> $GITHUB_ENV
 
@@ -235,6 +237,7 @@ jobs:
               AZURE_BLOB_STORAGE_CONNECTION_STRING=$AZURE_BLOB_STORAGE_CONNECTION_STRING \
               AZURE_BLOB_STORAGE_INPUT_FILES_CONTAINER_NAME="input-files" \
               AZURE_BLOB_STORAGE_OUTPUT_FILES_CONTAINER_NAME="output-files" \
+              AZURE_COSMOS_DB_CONNECTION_STRING=$AZURE_COSMOS_DB_CONNECTION_STRING \
               STING_CONFIG=$ESCAPED_STING_CONFIG \
               PHOENIX_CONFIG=$ESCAPED_PHOENIX_CONFIG \
             --cpu 1 --memory 1.5 \
