@@ -25,8 +25,50 @@ env:
   DOCKER_PLATFORM: 'linux/amd64' # set this for Docker build if needed
 
 jobs:
+  check-changed-dirs:
+    runs-on: ubuntu-latest
+    outputs:
+      scraper_should_run: ${{ steps.check_scraper_should_run.outputs.scraper_should_run }}
+      azure_functions_should_run: ${{ steps.check_azure_functions_should_run.outputs.azure_functions_should_run }}    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # Fetch the last 2 commits to ensure we can compare HEAD and HEAD^
+
+      - name: Get list of directories with changes
+        id: get_changed_dirs
+        run: |
+          CHANGED_DIRS=$(git diff --name-only HEAD^ HEAD | xargs -I {} dirname {} | sort | uniq)
+          echo "Changed directories:"
+          echo "$CHANGED_DIRS"
+          echo "changed_dirs=$CHANGED_DIRS" >> $GITHUB_OUTPUT
+      
+      - name: Check if scraper or workflow files changed
+        id: check_scraper_should_run
+        run: |
+          if echo "${{ steps.get_changed_dirs.outputs.changed_dirs }}" | grep -qE '(^| )scraper($| )|(^| )\.github/workflows($| )'; then
+            echo "scraper_should_run=true" >> $GITHUB_OUTPUT
+            echo "scraper_should_run=true"
+          else
+            echo "scraper_should_run=false" >> $GITHUB_OUTPUT
+            echo "scraper_should_run=false"
+          fi
+      
+      - name: Check if Azure Functions files changed
+        id: check_azure_functions_should_run
+        run: |
+          if echo "${{ steps.get_changed_dirs.outputs.changed_dirs }}" | grep -qE 'azure-functions.*|\.github/workflows.*'; then
+            echo "azure_functions_should_run=true" >> $GITHUB_OUTPUT
+            echo "azure_functions_should_run=true"
+          else
+            echo "azure_functions_should_run=false" >> $GITHUB_OUTPUT
+            echo "azure_functions_should_run=false"
+          fi
+  
   build-azure-functions:
-    if: github.event.inputs.force_run_azure_functions_jobs == 'true' || github.event.head_commit.added.* == 'azure-functions/**' || github.event.head_commit.modified.* == 'azure-functions/**' || github.event.head_commit.removed.* == 'azure-functions/**'
+    needs: check-changed-dirs
+    if: github.event.inputs.force_run_azure_functions_jobs == 'true' || needs.check-changed-dirs.outputs.azure_functions_should_run == 'true'
     runs-on: ubuntu-latest
     environment:
       name: 'staging'
@@ -82,23 +124,9 @@ jobs:
           enable-oryx-build: true
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_A9BD903092ED444AB794B1B8EDB62D1D }}
 
-  test-ci-stuff:
-    runs-on: ubuntu-latest
-    environment:
-      name: 'staging'
-    steps:
-      - name: Check changed files
-        run: |
-          echo "Added files: ${{ github.event.head_commit.added }}"
-          echo "Modified files: ${{ github.event.head_commit.modified }}"
-          echo "Removed files: ${{ github.event.head_commit.removed }}"
-      - name: Dump GitHub Context
-        env:
-          GITHUB_CONTEXT: ${{ toJson(github) }}
-        run: echo "$GITHUB_CONTEXT"
-
   build-and-test-scraper:
-    if: github.event.inputs.force_run_aci_jobs == 'true' || github.event.head_commit.added.* == 'scraper/**' || github.event.head_commit.modified.* == 'scraper/**' || github.event.head_commit.removed.* == 'scraper/**'
+    needs: check-changed-dirs
+    if: github.event.inputs.force_run_aci_jobs == 'true' || needs.check-changed-dirs.outputs.scraper_should_run == 'true'
     runs-on: ubuntu-latest
     environment:
       name: 'staging'
