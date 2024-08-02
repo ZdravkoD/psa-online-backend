@@ -11,8 +11,8 @@ def _get_ecs_logger(name: str = "main") -> logging.Logger:
     result.setLevel(logging.DEBUG)
     result.propagate = False
 
-    if result.hasHandlers():
-        result.handlers.clear()
+    # if result.hasHandlers():
+    #     result.handlers.clear()
 
     return result
 

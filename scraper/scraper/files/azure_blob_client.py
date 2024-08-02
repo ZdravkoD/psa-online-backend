@@ -16,7 +16,7 @@ class AzureBlobClient:
         return container_client.get_blob_client(blob_name)
 
     def upload_blob_to_output_container(self, blob_name, data):
-        print(f"Uploading blob {blob_name} to container {self.output_container_name}")
+        print(f"Uploading blob {blob_name} to container {self.output_container_name} with size {len(data)} bytes")
         blob_client = self._get_blob_client(self.output_container_name, blob_name)
         blob_client.upload_blob(data, overwrite=True)
 

@@ -111,7 +111,7 @@ class TaskHandler:
             raise e
 
     def handle_task(self):
-        logging.info("Handling task: ", self.taskItem.to_json())
+        print("Handling task: ", self.taskItem.to_json())
         try:
             self._open_and_validate_input_file()
             for scraper in self.scrapers:
@@ -136,11 +136,12 @@ class TaskHandler:
             return
         finally:
             print("FINALLLYYYYY")
+            blob_client = AzureBlobClient()
             for scraper in self.scrapers:
                 # print("Saving screenshot for scaper: ", scraper.get_name())
                 # scraper.saveScreenshot()
                 screenshotPng, screenshotName = scraper.getScreenshot()
-                AzureBlobClient().upload_blob_to_output_container(screenshotName, screenshotPng)
+                blob_client.upload_blob_to_output_container(screenshotName, screenshotPng)
 
     def _get_scrapers(self) -> List[BrowserCommon]:
         scrapers: List[BrowserCommon] = []
