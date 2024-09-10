@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 from bson import ObjectId
 from pymongo import MongoClient
 import threading
@@ -26,11 +27,26 @@ class CosmosDbClient:
         self.client = MongoClient(connection_string)
         self.database = self.client.get_database("psa")
 
-    def read_items(self, collection_name: str, query: dict):
+    def read_items(self,
+                   collection_name: str, 
+                   filter: Optional[dict] = None,
+                   projection: Optional[dict] = None,
+                   sort: Optional[dict] = None,
+                   skip: Optional[int] = 0,
+                   limit: Optional[int] = 0):
+        if not skip:
+            skip = 0
+        if not limit:
+            limit = 0
+
+        if filter:
+            if "id" in filter:
+                filter["_id"] = filter.pop("id")
+
         if self.database is None:
             raise ValueError("Database is not initialized")
         collection = self.database[collection_name]
-        items = list(collection.find(query))
+        items = list(collection.find(filter=filter, projection=projection, sort=sort, skip=skip, limit=limit))
         for item in items:
             if item.get("_id"):
                 item["id"] = str(item["_id"])

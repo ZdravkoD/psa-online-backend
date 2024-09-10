@@ -1,6 +1,12 @@
 # psa-online-backend
 Backend code for Pharmacy Stock Automation.
 
+## Doing staging/prod manual tests
+
+1. Always run then against Толстой.
+
+
+
 ## Running locally
 
 

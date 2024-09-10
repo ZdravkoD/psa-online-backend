@@ -1,6 +1,7 @@
-import datetime
 import json
 import os
+from datetime import datetime, timezone, timedelta
+from typing import Optional, Tuple
 import azure.functions as func
 from azure.servicebus import ServiceBusClient, ServiceBusMessage
 from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
@@ -113,7 +114,9 @@ def _create_task_json_content(req: func.HttpRequest) -> func.HttpResponse:
         file_type=FileType.JSON_CONTENT,
         pharmacy_id=pharmacy_id,
         distributors=distributors,
-        task_type=ScraperTaskActionType.START_OVER
+        task_type=ScraperTaskActionType.START_OVER,
+        date_created=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        date_updated=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     )
     cosmosDbClient = CosmosDbClient()
     inserted_id = cosmosDbClient.create_item("tasks", task_item.to_json())
@@ -199,7 +202,9 @@ def _create_task_file_content(req: func.HttpRequest) -> func.HttpResponse:
         file_type=FileType.BLOB_STORAGE_URL,
         pharmacy_id=pharmacy_id,
         distributors=distributors,
-        task_type=ScraperTaskActionType.START_OVER
+        task_type=ScraperTaskActionType.START_OVER,
+        date_created=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        date_updated=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     )
 
     cosmosDbClient = CosmosDbClient()
@@ -237,10 +242,42 @@ def task(req: func.HttpRequest) -> func.HttpResponse:
 def tasks(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request to get all tasks.')
 
+    try:
+        filter, projection, sort, skip, limit = _tasks_parse_params(req=req)
+    except ValueError as err:
+        return func.HttpResponse(
+            body=json.dumps({"error": str(err)}, cls=CustomJSONEncoder),
+            status_code=400,
+            mimetype="application/json")
+
     cosmosDbClient = CosmosDbClient()
-    tasks = cosmosDbClient.read_items("tasks", {})
+    tasks = cosmosDbClient.read_items(collection_name="tasks", filter=filter, projection=projection, sort=sort, skip=skip, limit=limit)
 
     return func.HttpResponse(body=json.dumps(tasks, cls=CustomJSONEncoder), status_code=200, mimetype="application/json")
+
+
+def _tasks_parse_params(req: func.HttpRequest) -> Tuple[Optional[dict], Optional[dict], Optional[dict], Optional[int], Optional[int]]:
+    # Parse filter param
+    filter_param = req.params.get("filter", None)
+    filter_dict = parse_json_param(filter_param, "filter")
+
+    # Parse projection param
+    projection_param = req.params.get("projection", None)
+    projection_dict = parse_json_param(projection_param, "projection")
+
+    # Parse sort param
+    sort_param = req.params.get("sort", None)
+    sort_dict = parse_json_param(sort_param, "sort")
+
+    # Parse skip param (integer)
+    skip_param = req.params.get("skip", None)
+    skip = parse_int_param(skip_param, "skip")
+
+    # Parse limit param (integer)
+    limit_param = req.params.get("limit", None)
+    limit = parse_int_param(limit_param, "limit")
+
+    return filter_dict, projection_dict, sort_dict, skip, limit
 
 
 @app.route(route="pharmacies", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
@@ -248,7 +285,7 @@ def get_pharmacies(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request to get all pharmacies.')
 
     cosmosDbClient = CosmosDbClient()
-    tasks = cosmosDbClient.read_items("pharmacies", {})
+    tasks = cosmosDbClient.read_items(collection_name="pharmacies")
 
     return func.HttpResponse(body=json.dumps(tasks), status_code=200, mimetype="application/json")
 
@@ -258,7 +295,7 @@ def get_distributors(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request to get all distributors.')
 
     cosmosDbClient = CosmosDbClient()
-    tasks = cosmosDbClient.read_items("distributors", {})
+    tasks = cosmosDbClient.read_items(collection_name="distributors")
 
     return func.HttpResponse(body=json.dumps(tasks), status_code=200, mimetype="application/json")
 
@@ -299,7 +336,7 @@ def pubsub_token(req: func.HttpRequest) -> func.HttpResponse:
     audience = f"{endpoint}/"
 
     # Calculate the expiration time
-    expiration_time = datetime.datetime.utcnow() + datetime.timedelta(minutes=60)
+    expiration_time = datetime.utcnow() + timedelta(minutes=60)
 
     # Generate the token
     token = jwt.encode({
@@ -349,10 +386,9 @@ def servicebus_trigger__task_updates(msg: func.ServiceBusMessage):
     logging.info(f'Received Service Bus message for task update: {msg.get_body().decode()}')
     msg_object: dict = json.loads(msg.get_body().decode())
 
-    print("ULALA:", json.dumps(msg_object))
     cosmosDbClient = CosmosDbClient()
     task: ScraperTaskItem = ScraperTaskItem.from_dict(cosmosDbClient.read_item_by_id("tasks", msg_object.get("task_id")) or {})
-    print("DANET:", json.dumps(task.to_json()))
+    task.date_updated = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     if msg_object.get("status") == TaskStatus.FINAL_REPORT:
         task.report = msg_object.get("report", {})
     else:
@@ -366,3 +402,23 @@ def servicebus_trigger__task_updates(msg: func.ServiceBusMessage):
     cosmosDbClient.update_item("tasks", task.id, task.to_update_dict())
 
     AzureWebPubSubServiceClient().send_task_update_to_all(json.loads(msg.get_body().decode()))
+
+
+def parse_json_param(param_value: Optional[str], param_name: str) -> Optional[dict]:
+    """Helper function to parse a JSON string parameter."""
+    if not param_value or param_value.strip() == "":
+        return None
+    try:
+        return json.loads(param_value)
+    except json.JSONDecodeError:
+        raise ValueError(f"Invalid JSON in {param_name} parameter")
+
+
+def parse_int_param(param_value: Optional[str], param_name: str) -> Optional[int]:
+    """Helper function to parse an integer parameter."""
+    if not param_value or param_value.strip() == "":
+        return None
+    try:
+        return int(param_value)
+    except ValueError:
+        raise ValueError(f"Invalid integer in {param_name} parameter")

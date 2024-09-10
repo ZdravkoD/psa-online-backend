@@ -67,6 +67,8 @@ class ScraperTaskItem:
                  pharmacy_id: str,
                  distributors: List[DistributorTypes],
                  task_type: ScraperTaskActionType,
+                 date_created: str,
+                 date_updated: str,
                  report: dict = dict()):
         """
         :param account_id: The account ID of the user who requested the task
@@ -87,7 +89,9 @@ class ScraperTaskItem:
             "file_type": "json_content",
             "pharmacy_id": "2075077",
             "distributors": ["sting", "phoenix"],
-            "task_type": "start_over"
+            "task_type": "start_over",
+            "date_created": "2024-09-09T03:30:31Z",
+            "date_updated": "2024-09-09T03:30:31Z",
         }
         """
         self.id: str = ""
@@ -99,6 +103,8 @@ class ScraperTaskItem:
         self.distributors = distributors
         self.task_type = task_type
         self.report = report
+        self.date_created = date_created
+        self.date_updated = date_updated
 
         self._validate()
 
@@ -142,6 +148,8 @@ class ScraperTaskItem:
             "pharmacy_id": self.pharmacy_id,
             "distributors": self.distributors,
             "task_type": self.task_type.value,
+            "date_created": self.date_created,
+            "date_updated": self.date_updated,
             "report": self.report,
         }
         if self.id:
@@ -157,6 +165,8 @@ class ScraperTaskItem:
             "pharmacy_id": self.pharmacy_id,
             "distributors": self.distributors,
             "task_type": self.task_type.value,
+            "date_created": self.date_created,
+            "date_updated": self.date_updated,
             "report": self.report,
         }
         return result
@@ -171,6 +181,8 @@ class ScraperTaskItem:
             pharmacy_id=data["pharmacy_id"],
             distributors=[DistributorTypes(distributor) for distributor in data["distributors"]],
             task_type=ScraperTaskActionType(data["task_type"]),
+            date_created=data["date_created"],
+            date_updated=data["date_updated"],
             report=data.get("report", {}),
         )
         cls_instance.id = data.get("_id") or data.get("id") or ""
