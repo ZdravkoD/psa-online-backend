@@ -40,7 +40,8 @@ try:
         print(container_group.response)
 except HttpResponseError as e:
     print(f"СССССС Container group {container_group_name} not found in resource group {resource_group_name}")
-    print(e.response.status_code)
+    if e.response:
+        print(e.response.status_code)
     print(e.message)
 
 print(client)

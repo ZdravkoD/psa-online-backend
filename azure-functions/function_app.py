@@ -13,10 +13,19 @@ from pubsub_client import AzureWebPubSubServiceClient
 from werkzeug.utils import secure_filename
 
 from cosmosdb_client import CosmosDbClient
-from messaging import FileType, ScraperTaskActionType, ScraperTaskItem, ScraperTaskUpdates, TaskStatus
+from messaging import FileType, ScraperTaskActionType, ScraperTaskItem, ScraperTaskItemStatus, ScraperTaskUpdates, TaskStatus
 from json_encoder import CustomJSONEncoder
 
 app = func.FunctionApp()
+cosmosDbClient = CosmosDbClient()
+# Create a logger for this module
+logger = logging.getLogger(__name__)
+# Basic configuration for logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="[%(asctime)s][%(name)s][%(levelname)s]: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 
 
 @app.route(route="task", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
@@ -116,9 +125,14 @@ def _create_task_json_content(req: func.HttpRequest) -> func.HttpResponse:
         distributors=distributors,
         task_type=ScraperTaskActionType.START_OVER,
         date_created=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-        date_updated=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        date_updated=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        report=None
     )
-    cosmosDbClient = CosmosDbClient()
+    task_item.status = ScraperTaskItemStatus(
+        status=TaskStatus.IN_PROGRESS,
+        message="Задачата стартира...",
+        progress=0
+    )
     inserted_id = cosmosDbClient.create_item("tasks", task_item.to_json())
     task_item.id = inserted_id
 
@@ -204,10 +218,15 @@ def _create_task_file_content(req: func.HttpRequest) -> func.HttpResponse:
         distributors=distributors,
         task_type=ScraperTaskActionType.START_OVER,
         date_created=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-        date_updated=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        date_updated=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        report=None
+    )
+    task_item.status = ScraperTaskItemStatus(
+        status=TaskStatus.IN_PROGRESS,
+        message="Задачата стартира...",
+        progress=0
     )
 
-    cosmosDbClient = CosmosDbClient()
     inserted_id = cosmosDbClient.create_item("tasks", task_item.to_json())
     task_item.id = inserted_id
 
@@ -216,18 +235,17 @@ def _create_task_file_content(req: func.HttpRequest) -> func.HttpResponse:
     return func.HttpResponse(body=json.dumps({"id": str(task_item.id)}), status_code=201)
 
 
-@app.route(route="task", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
+@app.route(route="task/{taskId}", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
 def task(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request to get a task.')
 
-    task_id = req.params.get('id')
+    task_id = req.route_params.get('taskId')
     if not task_id:
         return func.HttpResponse(
-            "Please provide the task ID in the query string.",
+            "Please provide the task ID in the URI.",
             status_code=400
         )
 
-    cosmosDbClient = CosmosDbClient()
     task = cosmosDbClient.read_item_by_id("tasks", task_id)
     if not task:
         return func.HttpResponse(
@@ -235,7 +253,7 @@ def task(req: func.HttpRequest) -> func.HttpResponse:
             status_code=404
         )
 
-    return func.HttpResponse(body=json.dumps(task), status_code=200, mimetype="application/json")
+    return func.HttpResponse(body=json.dumps(task, default=str), status_code=200, mimetype="application/json")
 
 
 @app.route(route="tasks", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
@@ -250,7 +268,6 @@ def tasks(req: func.HttpRequest) -> func.HttpResponse:
             status_code=400,
             mimetype="application/json")
 
-    cosmosDbClient = CosmosDbClient()
     tasks = cosmosDbClient.read_items(collection_name="tasks", filter=filter, projection=projection, sort=sort, skip=skip, limit=limit)
 
     return func.HttpResponse(body=json.dumps(tasks, cls=CustomJSONEncoder), status_code=200, mimetype="application/json")
@@ -284,7 +301,6 @@ def _tasks_parse_params(req: func.HttpRequest) -> Tuple[Optional[dict], Optional
 def get_pharmacies(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request to get all pharmacies.')
 
-    cosmosDbClient = CosmosDbClient()
     tasks = cosmosDbClient.read_items(collection_name="pharmacies")
 
     return func.HttpResponse(body=json.dumps(tasks), status_code=200, mimetype="application/json")
@@ -294,7 +310,6 @@ def get_pharmacies(req: func.HttpRequest) -> func.HttpResponse:
 def get_distributors(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request to get all distributors.')
 
-    cosmosDbClient = CosmosDbClient()
     tasks = cosmosDbClient.read_items(collection_name="distributors")
 
     return func.HttpResponse(body=json.dumps(tasks), status_code=200, mimetype="application/json")
@@ -302,9 +317,9 @@ def get_distributors(req: func.HttpRequest) -> func.HttpResponse:
 
 def upload_file_bytes_to_blob_storage(filename: str, file_data: bytes):
     connection_string = os.getenv("AZURE_BLOB_STORAGE_CONNECTION_STRING", "")
-    print("connection_string", connection_string)
+    logger.info(f"connection_string {connection_string}")
     container_name = os.getenv("AZURE_BLOB_STORAGE_INPUT_FILES_CONTAINER_NAME", "")
-    print("container_name", container_name)
+    logger.info(f"container_name {container_name}")
     blob_service_client = BlobServiceClient.from_connection_string(connection_string)
     container_client: ContainerClient = blob_service_client.get_container_client(container_name)
     blob_client: BlobClient = container_client.get_blob_client(filename)
@@ -331,7 +346,7 @@ def pubsub_token(req: func.HttpRequest) -> func.HttpResponse:
             status_code=500
         )
 
-    endpoint = f"https://psa-pubsub.webpubsub.azure.com/client/hubs/{hub_name}"
+    endpoint = f"{os.getenv('AZURE_WEB_PUBSUB_ENDPOINT', '')}/client/hubs/{hub_name}"
     issuer = f"{endpoint}/"
     audience = f"{endpoint}/"
 
@@ -368,10 +383,42 @@ def send_message_to_servicebus_queue(message: dict):
         with sender:
             sb_message = ServiceBusMessage(json.dumps(message), content_type="application/json")
             sender.send_messages(sb_message)
-            logging.info(f"Sent message to the Service Bus queue: {message}")
+            logging.info(f"Sent message to the Service Bus queue ({QUEUE_NAME}): {message}")
 
 
-@app.service_bus_queue_trigger(arg_name="msg", queue_name="task-updates", connection="psaonline_SERVICEBUS")
+@app.route(route="input-file/{filename}", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
+def get_input_file(req: func.HttpRequest) -> func.HttpResponse:
+    logging.info('Python HTTP trigger function processed a request to get an input file.')
+
+    filename = req.route_params.get('filename')
+    if not filename:
+        return func.HttpResponse(
+            "Please provide the filename in the URI.",
+            status_code=400
+        )
+
+    connection_string = os.getenv("AZURE_BLOB_STORAGE_CONNECTION_STRING", "")
+    container_name = os.getenv("AZURE_BLOB_STORAGE_INPUT_FILES_CONTAINER_NAME", "")
+    blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+    container_client: ContainerClient = blob_service_client.get_container_client(container_name)
+    blob_client: BlobClient = container_client.get_blob_client(filename)
+
+    try:
+        blob_data = blob_client.download_blob().readall()
+    except Exception as e:
+        logging.error(f"Failed to download file from Blob Storage: {e}")
+        return func.HttpResponse(
+            "File not found.",
+            status_code=404
+        )
+
+    # return func.HttpResponse(body=blob_data, status_code=200, mimetype="application/octet-stream")
+    return func.HttpResponse(body=blob_data, status_code=200, mimetype="application/octet-stream", headers={
+        "Content-Disposition": f"attachment; filename={filename}"
+    })
+
+
+@app.service_bus_queue_trigger(arg_name="msg", queue_name=os.getenv("psaonline_SERVICEBUS_QUEUE_TASK_UPDATES", ""), connection="psaonline_SERVICEBUS")
 def servicebus_trigger__task_updates(msg: func.ServiceBusMessage):
     """
     Example message body:
@@ -379,29 +426,23 @@ def servicebus_trigger__task_updates(msg: func.ServiceBusMessage):
         "account_id": "123",
         "task_id": "123",
         "status": "in progress",
-        "message": "Starting the task...",
+        "message": "Задачата стартира...",
         "progress": "37"
     }
     """
     logging.info(f'Received Service Bus message for task update: {msg.get_body().decode()}')
-    msg_object: dict = json.loads(msg.get_body().decode())
+    msg_dict = json.loads(msg.get_body().decode())
+    msg_object = ScraperTaskUpdates(**msg_dict)
+    task_id: str = str(msg_object.task_id)
 
-    cosmosDbClient = CosmosDbClient()
-    task: ScraperTaskItem = ScraperTaskItem.from_dict(cosmosDbClient.read_item_by_id("tasks", msg_object.get("task_id")) or {})
+    task: ScraperTaskItem = ScraperTaskItem.from_dict(cosmosDbClient.read_item_by_id("tasks", task_id) or {})
     task.date_updated = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-    if msg_object.get("status") == TaskStatus.FINAL_REPORT:
-        task.report = msg_object.get("report", {})
-    else:
-        task.status = ScraperTaskUpdates(
-            account_id=task.account_id,
-            task_id=task.id,
-            status=str(msg_object.get("status")) if msg_object.get("status") else TaskStatus.IN_PROGRESS,
-            message=str(msg_object.get("message")),
-            progress=int(msg_object.get("progress") or 0)
-        )
+    task.status = msg_object.status
+    task.report = msg_object.report
+    task.image_urls = msg_object.image_urls
     cosmosDbClient.update_item("tasks", task.id, task.to_update_dict())
 
-    AzureWebPubSubServiceClient().send_task_update_to_all(json.loads(msg.get_body().decode()))
+    AzureWebPubSubServiceClient().send_task_update_to_all(msg_dict)
 
 
 def parse_json_param(param_value: Optional[str], param_name: str) -> Optional[dict]:

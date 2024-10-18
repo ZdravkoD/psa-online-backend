@@ -23,17 +23,31 @@ class TaskStatus(str, Enum):
     ERROR = "error"
     SUCCESS = "success"
     IN_PROGRESS = "in progress"
-    FINAL_REPORT = "final report"
 
 
-class ScraperTaskUpdates:
-    def __init__(self, account_id: ObjectId, task_id: str, status: str, message: str, progress: int, detailed_error_message=None):
-        self.account_id = account_id
-        self.task_id = task_id
+class ScraperTaskItemStatus:
+    def __init__(self, status: TaskStatus, message: str, progress: int, detailed_error_message=None):
         self.status = status
         self.message = message
         self.progress = progress
         self.detailed_error_message = detailed_error_message
+
+    def to_json(self):
+        return {
+            "status": self.status.value,
+            "message": self.message,
+            "progress": self.progress,
+            "detailed_error_message": self.detailed_error_message,
+        }
+
+
+class ScraperTaskUpdates:
+    def __init__(self, account_id: ObjectId, task_id: str, status: ScraperTaskItemStatus, report: dict | None, image_urls: list[str] | None = None):
+        self.account_id = account_id
+        self.task_id = task_id
+        self.status = status
+        self.report = report
+        self.image_urls = image_urls
 
     def _validate(self):
         if not isinstance(self.account_id, ObjectId):
@@ -49,15 +63,14 @@ class ScraperTaskUpdates:
         return {
             "account_id": str(self.account_id),
             "task_id": str(self.task_id),
-            "status": str(self.status),
-            "message": self.message,
-            "progress": self.progress,
-            "detailed_error_message": self.detailed_error_message
+            "status": self.status.to_json(),
+            "report": self.report,
+            "image_urls": self.image_urls
         }
 
 
 class ScraperTaskItem:
-    status: ScraperTaskUpdates
+    status: ScraperTaskItemStatus
 
     def __init__(self,
                  account_id: ObjectId,
@@ -69,7 +82,8 @@ class ScraperTaskItem:
                  task_type: ScraperTaskActionType,
                  date_created: str,
                  date_updated: str,
-                 report: dict = dict()):
+                 report: dict | None,
+                 image_urls: list[str] | None = None):
         """
         :param account_id: The account ID of the user who requested the task
         :param file_name: The name of the file - this is used for logging purposes
@@ -102,9 +116,10 @@ class ScraperTaskItem:
         self.pharmacy_id = pharmacy_id
         self.distributors = distributors
         self.task_type = task_type
-        self.report = report
         self.date_created = date_created
         self.date_updated = date_updated
+        self.report = report
+        self.image_urls = image_urls
 
         self._validate()
 
@@ -150,7 +165,9 @@ class ScraperTaskItem:
             "task_type": self.task_type.value,
             "date_created": self.date_created,
             "date_updated": self.date_updated,
+            "status": self.status.to_json(),
             "report": self.report,
+            "image_urls": self.image_urls
         }
         if self.id:
             result["_id"] = str(self.id)
@@ -167,7 +184,9 @@ class ScraperTaskItem:
             "task_type": self.task_type.value,
             "date_created": self.date_created,
             "date_updated": self.date_updated,
+            "status": self.status,
             "report": self.report,
+            "image_urls": self.image_urls
         }
         return result
 
@@ -183,7 +202,14 @@ class ScraperTaskItem:
             task_type=ScraperTaskActionType(data["task_type"]),
             date_created=data["date_created"],
             date_updated=data["date_updated"],
-            report=data.get("report", {}),
+            report=data["report"],
+            image_urls=data.get("image_urls")
         )
         cls_instance.id = data.get("_id") or data.get("id") or ""
+        cls_instance.status = ScraperTaskItemStatus(
+            status=data["status"]["status"],
+            message=data["status"]["message"],
+            progress=data["status"]["progress"],
+            detailed_error_message=data["status"].get("detailed_error_message"),
+        )
         return cls_instance

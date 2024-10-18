@@ -46,6 +46,7 @@ class FileWorker:
     """
     This is the base class for all worker types on the task file_data message
     """
+
     def __init__(self):
         pass
 

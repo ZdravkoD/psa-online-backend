@@ -45,6 +45,10 @@
                 "value": "output-files"
               },
               {
+                "name": "AZURE_BLOB_STORAGE_LOG_FILES_CONTAINER_NAME",
+                "value": "log-files"
+              },              
+              {
                 "name": "STING_CONFIG",
                 "secureValue": "@Microsoft.KeyVault(SecretUri=https://psa-staging-kv.vault.azure.net/secrets/sting-config/64103153b96b4b84bb1df4bb014371e1)"
               },

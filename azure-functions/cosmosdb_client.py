@@ -1,8 +1,12 @@
+import logging
 import os
 from typing import Optional
 from bson import ObjectId
 from pymongo import MongoClient
 import threading
+
+# Create a logger for this module
+logger = logging.getLogger(__name__)
 
 
 class CosmosDbClient:
@@ -11,24 +15,25 @@ class CosmosDbClient:
     database = None
 
     def __new__(cls, *args, **kwargs):
-        print("CosmosDbClient::__new__() called to create")
+        logger.info("CosmosDbClient::__new__() called to create")
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
-                    print("Creating CosmosDbClient instance")
+                    logger.info("Creating CosmosDbClient instance")
                     cls._instance = super(CosmosDbClient, cls).__new__(cls)
                     cls._instance._initialize_client()
         return cls._instance
 
     def _initialize_client(self):
         # Initialize the client here
-        print("Initializing CosmosDbClient")
+        logger.info("Initializing CosmosDbClient")
         connection_string = os.getenv("AZURE_COSMOS_DB_CONNECTION_STRING", "")
         self.client = MongoClient(connection_string)
         self.database = self.client.get_database("psa")
+        logger.info("CosmosDbClient Initialized!")
 
     def read_items(self,
-                   collection_name: str, 
+                   collection_name: str,
                    filter: Optional[dict] = None,
                    projection: Optional[dict] = None,
                    sort: Optional[dict] = None,
@@ -53,7 +58,7 @@ class CosmosDbClient:
                 item.pop("_id")
         return items
 
-    def read_item_by_id(self, collection_name, id):
+    def read_item_by_id(self, collection_name: str, id: str):
         if self.database is None:
             raise ValueError("Database is not initialized")
         collection = self.database[collection_name]

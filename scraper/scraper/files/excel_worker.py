@@ -10,6 +10,9 @@ from openpyxl.worksheet.worksheet import Worksheet
 from files.file_worker import FileWorker, RowInfo, WorkerProgress
 from files.azure_blob_client import AzureBlobClient
 
+# Create a logger for this module
+logger = logging.getLogger(__name__)
+
 # -*- coding: utf-8 -*-
 
 # old format
@@ -52,37 +55,41 @@ class ExcelWorker(FileWorker):
         fileBytes = AzureBlobClient().download_blob_from_input_container(self.inputFilename)
         with open(self.inputFilename, "wb") as file:
             file.write(fileBytes)
-            print("ExcelWorker: File downloaded successfully into: " + self.inputFilename)
+            logger.info("ExcelWorker: File downloaded successfully into: " + self.inputFilename)
 
         try:
             self.inputFile = openpyxl.load_workbook(self.inputFilename, read_only=True)
             self.inputSheet = self.inputFile.active  # type: ignore
             if self.inputSheet is None:
                 raise Exception("ExcelWorker: Can't open input file")
-            print("ExcelWorker: Input sheet name: " + self.inputSheet.title)
-            print("ExcelWorker: Input file opened successfully from: " + self.inputFilename)
+            logger.info("ExcelWorker: Input sheet name: " + self.inputSheet.title)
+            logger.info("ExcelWorker: Input file opened successfully from: " + self.inputFilename)
         except Exception as e:
-            logging.exception("ExcelWorker: Can't open input file: " + str(e))
-            raise Exception("ExcelWorker: Can't open input file: " + str(e))
+            logger.exception(f"ExcelWorker: Can't open input file: {str(e)}")
+            raise Exception(f"ExcelWorker: Can't open input file: {str(e)}")
 
         self.outputFile = openpyxl.Workbook()
         self.outputSheet = self.outputFile["Sheet"]
         self.outputSheet.title = "Report"
 
     def _test_writing_to_output_file(self):
-        logging.info("ExcelWorker: Test if we can write to output file")
+        logger.info("ExcelWorker: Test if we can write to output file")
         try:
             if self.outputFile is not None:
                 self.outputFile.save(self.outputFilename)
         except Exception as e:
-            logging.exception("ExcelWorker: Can't write to output file: " + str(e))
-            raise Exception("Моля затворене Report файла и опитайте отново!\n\n" + self.outputFilename)
+            logger.exception(f"ExcelWorker: Can't write to output file: {str(e)}")
+            raise Exception(f"Моля затворене Report файла и опитайте отново!\n\n{self.outputFilename}")
 
     def getNumberOfRows(self):
         if self.inputSheet is None:
             raise Exception("ExcelWorker: Input file is not opened")
 
-        return self.inputSheet.max_row
+        max_row = 0
+        for row in self.inputSheet.iter_rows():
+            if any(cell.value is not None for cell in row):
+                max_row = row[0].row
+        return max_row
 
     def get_next_row(self) -> RowInfo:
         if self.inputSheet is None:
@@ -94,7 +101,7 @@ class ExcelWorker(FileWorker):
         # while self.currentInputRow < self.nrows:
         for row in self.inputSheet.iter_rows(min_row=self.currentInputRow, max_row=self.inputSheet.max_row, max_col=4):
 
-            logging.info("ExcelWorker: Reading row %d from %d", self.currentInputRow, self.nrows)
+            logger.info("ExcelWorker: Reading row %d from %d", self.currentInputRow, self.nrows)
             # self.markRowInProgress()
             # currentInputRow = self.currentInputRow
             self.currentInputRow += 1
@@ -102,7 +109,7 @@ class ExcelWorker(FileWorker):
             # self.originalProductName, currentProductNameVariations = self._generateProductNameVariations(
             #     self.inputSheet.cell(row=currentInputRow, column=2).value
             #     )
-            print("Product name: " + str(row[1].value), "Product quantity: " + str(row[3].value))
+            logger.info(f"Product name: {row[1].value}, Product quantity: {row[3].value}")
             self.originalProductName, currentProductNameVariations = self._generateProductNameVariations(row[1].value)
             # If the products has been met, ignore it and continue to the next row
             if (self.originalProductName not in self.metProducts):
@@ -117,7 +124,7 @@ class ExcelWorker(FileWorker):
                 self.metProducts.add(self.originalProductName)
                 return RowInfo(self.originalProductName, currentProductNameVariations, self.currentProductQuantity)
             else:
-                logging.info("ExcelWorker: Skipping duplicate product: " + self.originalProductName)
+                logger.info("ExcelWorker: Skipping duplicate product: " + self.originalProductName)
 
         return RowInfo(None, None, None)
 
@@ -126,7 +133,7 @@ class ExcelWorker(FileWorker):
         if self.inputSheet is None:
             raise Exception("ExcelWorker: Input file is not opened")
 
-        logging.info(f"Marking row: {self.currentInputRow} and column: {COLUMN_TO_FILL + 1}")
+        logger.info(f"Marking row: {self.currentInputRow} and column: {COLUMN_TO_FILL + 1}")
         # green_fill = PatternFill(start_color='00FF00', end_color='00FF00', fill_type='solid')
         # self.inputSheet.cell(row=self.currentInputRow, column=COLUMN_TO_FILL + 1).fill = green_fill
 
@@ -188,7 +195,7 @@ class ExcelWorker(FileWorker):
 
     def validate_input(self):
         self.nrows = self.getNumberOfRows()
-        logging.info("Общ брой редове във файла: " + str(self.nrows) + "\n")
+        logger.info("Общ брой редове във файла: " + str(self.nrows) + "\n")
 
         for currentRow in range(1, self.nrows + 1):
             self._checkValuesForCorrectness(currentRow)
@@ -284,7 +291,7 @@ class ExcelWorker(FileWorker):
         if self.outputFile is None:
             raise Exception("ExcelWorker: Input file is not opened")
 
-        logging.info("ExcelWorker: saveOutputFile")
+        logger.info("ExcelWorker: saveOutputFile")
         self._writeBoughtProducts()
         self._writeNotBoughtProducts()
         self.outputFile.save(self.outputFilename)
@@ -293,7 +300,7 @@ class ExcelWorker(FileWorker):
         if self.inputFile is None:
             raise Exception("ExcelWorker: Input file is not opened")
 
-        logging.info("ExcelWorker: closeInputFile")
+        logger.info("ExcelWorker: closeInputFile")
         self.inputFile.save(self.inputFilename)
 
     def getOutputFilename(self):

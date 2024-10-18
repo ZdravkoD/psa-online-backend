@@ -16,6 +16,7 @@ class JsonContentWorker(FileWorker):
     The JSON format should be:
     {"rows": [{"product_name": "product 1", "quantity": 10}, {"product_name": "product 2", "quantity": 20}]}
     """
+
     def __init__(self):
         self.json_data: dict | None = None
         self.current_row = 0
@@ -50,7 +51,7 @@ class JsonContentWorker(FileWorker):
 
             self.original_product_name, currentProductNameVariations = self._generateProductNameVariations(
                 self.json_data["rows"][current_row].get("product_name")
-                )
+            )
             # If the products has been met, ignore it and continue to the next row
             if (self.original_product_name not in self.met_products):
                 try:

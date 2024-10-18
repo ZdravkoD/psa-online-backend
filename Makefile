@@ -1,6 +1,6 @@
 .PHONY: help docker-build docker-run docker-stop
 
-VENV_PYTHON := .venv/bin/python3.12
+VENV_PYTHON := .venv/bin/python
 
 default: help
 

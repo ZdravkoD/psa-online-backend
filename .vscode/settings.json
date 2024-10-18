@@ -11,4 +11,5 @@
         "--max-line-length=150"
         ],
         "python.analysis.typeCheckingMode": "basic",
+        "makefile.configureOnOpen": false,
 }

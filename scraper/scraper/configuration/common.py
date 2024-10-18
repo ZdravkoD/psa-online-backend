@@ -1,12 +1,11 @@
 import json
 import os
+import logging
 from typing import List, Union
 from dotenv import load_dotenv
 
-from psa_logger.logger import get_logger
-
-
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 load_dotenv(override=True)
 
@@ -59,7 +58,7 @@ class AzureConfig:
             "azure-config.json",
         )
         QUEUE_NAME = get_variable(
-            "AZURE_SERVICE_BUS_QUEUE_NAME", "queue_name", "azure-config.json"
+            "AZURE_SERVICE_BUS_QUEUE_NAME", "queue_name", "azure-config.json", "task-queue"
         )
 
     class ServiceBusTasksUpdates:
@@ -69,7 +68,7 @@ class AzureConfig:
             "azure-config.json",
         )
         QUEUE_NAME = get_variable(
-            "AZURE_SERVICE_BUS_TASK_UPDATES_QUEUE_NAME", "queue_name", "azure-config.json"
+            "AZURE_SERVICE_BUS_TASK_UPDATES_QUEUE_NAME", "queue_name", "azure-config.json", "task-updates"
         )
 
     class BlobStorage:
@@ -82,11 +81,19 @@ class AzureConfig:
             "AZURE_BLOB_STORAGE_INPUT_FILES_CONTAINER_NAME",
             "input_files_container_name",
             "azure-config.json",
+            "input-files",
         )
         OUTPUT_FILES_CONTAINER_NAME = get_variable(
             "AZURE_BLOB_STORAGE_OUTPUT_FILES_CONTAINER_NAME",
             "output_files_container_name",
             "azure-config.json",
+            "output-files",
+        )
+        LOG_FILES_CONTAINER_NAME = get_variable(
+            "AZURE_BLOB_STORAGE_LOG_FILES_CONTAINER_NAME",
+            "log_files_container_name",
+            "azure-config.json",
+            "log-files",
         )
 
 
@@ -106,7 +113,7 @@ class UserList:
         self.load_users(json_data)
 
     def load_users(self, json_data: Union[str, List[dict]]):
-        print("Loading users from JSON data:", json_data, "Type:", type(json_data))
+        logger.info(f"Loading users from JSON data: {json_data} Type: {type(json_data)}")
         # Load user data from JSON, which is a string in JSON format
         # Check if json_data is a string, if so, parse it to JSON
         while isinstance(json_data, str):
@@ -114,13 +121,13 @@ class UserList:
 
         user_data = json_data
 
-        print("user_data:", user_data, "Type:", type(user_data))
+        logger.info(f"user_data: {user_data} Type: {type(user_data)}")
 
         for user_dict in user_data:
             user = User(id=user_dict['id'], username=user_dict['username'], password=user_dict['password'])
             self.users.append(user)
 
-        print(f"Loaded {len(self.users)} users from JSON data: ", self.users[0])
+        logger.debug(f"Loaded {len(self.users)} users from JSON data: {self.users[0]}")
 
     def get_user(self, username):
         # Retrieve a user by username
@@ -154,7 +161,7 @@ class DistributorConfig:
     )
 
     def __init__(self):
-        print("Initializing DistributorConfig")
+        logger.info("Initializing DistributorConfig")
         if self.INIT_CONFIG_FROM == "db":
             self._init_from_db()
 

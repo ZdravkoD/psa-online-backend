@@ -1,6 +1,7 @@
 import json
 import logging
 import math
+import os
 from typing import List
 
 from selenium.common.exceptions import StaleElementReferenceException
@@ -12,6 +13,10 @@ from files.file_worker import FileWorker, RowInfo
 from files.file_worker_factory import FileWorkerFactory
 from files.azure_blob_client import AzureBlobClient
 from task_handler.task_update_publisher import TaskUpdatePublisher
+from psa_logger.logger import get_current_logfile_name, get_current_logfile_data
+
+# Create a logger for this module
+logger = logging.getLogger(__name__)
 
 
 class ProductInfo:
@@ -50,7 +55,8 @@ class BoughtProductInfo:
         if not isinstance(all_pharmacy_product_infos, List):
             raise ValueError("All pharmacy product infos must be a list")
         if not all(isinstance(product_info, ProductInfo) for product_info in all_pharmacy_product_infos):
-            raise ValueError("All pharmacy product infos must be a list of ProductInfo")
+            raise ValueError(
+                "All pharmacy product infos must be a list of ProductInfo")
         if not isinstance(bought_from_distributor, str):
             raise ValueError("Bought from pharmacy must be a string")
 
@@ -95,13 +101,15 @@ class TaskHandler:
     def __init__(self, taskItem: ScraperTaskItem):
         try:
             self.taskItem = taskItem
-            self.file_worker: FileWorker = FileWorkerFactory(taskItem.file_type).get_file_worker()
+            self.file_worker: FileWorker = FileWorkerFactory(
+                taskItem.file_type).get_file_worker()
             self.task_update_publisher = TaskUpdatePublisher()
             self.scrapers = self._get_scrapers()
             self.bought_products: List[BoughtProductInfo] = []
             self.unbought_products: List[UnboughtProductInfo] = []
         except Exception as e:
-            logging.error("TaskHandler: Couldn't initialize the task handler: ", e)
+            logger.error(
+                "TaskHandler: Couldn't initialize the task handler: ", e)
             self.task_update_publisher.publish_error(
                 self.taskItem.account_id,
                 self.taskItem.id,
@@ -111,7 +119,7 @@ class TaskHandler:
             raise e
 
     def handle_task(self):
-        print("Handling task: ", self.taskItem.to_json())
+        logger.info(f"Handling task: {self.taskItem.to_json()}")
         try:
             self._open_and_validate_input_file()
             for scraper in self.scrapers:
@@ -120,39 +128,52 @@ class TaskHandler:
 
             self._work_loop()
 
-            self.task_update_publisher.publish_final_report(
-                self.taskItem.account_id,
-                self.taskItem.id,
-                json.dumps(self._generate_report().__dict__()),
-                100)
+            self.task_update_publisher.publish_success(
+                account_id=self.taskItem.account_id,
+                task_id=self.taskItem.id,
+                message="Задачата приключи успешно!",
+                progress=100,
+                report=self._generate_report().__dict__())
         except Exception as e:
-            logging.exception("TaskHandler: Failed to handle the task: ", str(e))
+            logger.exception(f"TaskHandler: Failed to handle the task: {str(e)}")
+            blob_client = AzureBlobClient()
+            try:
+                blob_client.upload_blob_to_log_container(get_current_logfile_name(), get_current_logfile_data())
+            except Exception as e_logfile:
+                logger.error(f"TaskHandler: Couldn't upload the log file: {e_logfile}")
+
+            image_urls = []
+            for scraper in self.scrapers:
+                scraper_temporary_screenshots = scraper.get_temporary_screenshots()
+                for screenshotPng, screenshotName in scraper_temporary_screenshots:
+                    image_urls.append(
+                        f"https://psaonlinestorage.blob.core.windows.net/{os.getenv('AZURE_BLOB_STORAGE_OUTPUT_FILES_CONTAINER_NAME')}/{screenshotName}")
+                    blob_client.upload_blob_to_output_container(screenshotName, screenshotPng[:])
+                screenshotPng, screenshotName = scraper.getScreenshot()
+                image_urls.append(
+                    f"https://psaonlinestorage.blob.core.windows.net/{os.getenv('AZURE_BLOB_STORAGE_OUTPUT_FILES_CONTAINER_NAME')}/{screenshotName}")
+                blob_client.upload_blob_to_output_container(screenshotName, screenshotPng[:])
+
             self.task_update_publisher.publish_error(
                 self.taskItem.account_id,
                 self.taskItem.id,
-                "Failed to handle the task",
+                "Неуспешно завършване на задачата!",
                 str(e) if str(e).strip() != "" else str(e.__traceback__),
-                0)
+                0,
+                image_urls=image_urls)
             return
-        finally:
-            print("FINALLLYYYYY")
-            blob_client = AzureBlobClient()
-            for scraper in self.scrapers:
-                # print("Saving screenshot for scaper: ", scraper.get_name())
-                # scraper.saveScreenshot()
-                screenshotPng, screenshotName = scraper.getScreenshot()
-                blob_client.upload_blob_to_output_container(screenshotName, screenshotPng)
 
     def _get_scrapers(self) -> List[BrowserCommon]:
         scrapers: List[BrowserCommon] = []
 
         for distributor in self.taskItem.distributors:
             if distributor == "sting":
-                logging.info("TaskHandler: Handling task for Sting")
+                logger.info("TaskHandler: Handling task for Sting")
                 scrapers.append(StingPharma(self.taskItem.pharmacy_id))
             elif distributor == "phoenix":
-                logging.info("TaskHandler: Handling task for Phoenix")
-                scrapers.append(PhoenixPharmaOptimized(self.taskItem.pharmacy_id))
+                logger.info("TaskHandler: Handling task for Phoenix")
+                scrapers.append(PhoenixPharmaOptimized(
+                    self.taskItem.pharmacy_id))
 
         return scrapers
 
@@ -160,7 +181,7 @@ class TaskHandler:
         try:
             self.file_worker.open_file(self.taskItem.file_data)
         except Exception as e:
-            logging.error("TaskHandler: Couldn't open the file: ", e)
+            logger.error("TaskHandler: Couldn't open the file: ", e)
             self.task_update_publisher.publish_error(
                 self.taskItem.account_id,
                 self.taskItem.id,
@@ -172,7 +193,7 @@ class TaskHandler:
         try:
             self.file_worker.validate_input()
         except Exception as e:
-            logging.error("TaskHandler: Couldn't validate the input file: ", e)
+            logger.error("TaskHandler: Couldn't validate the input file: ", e)
             self.task_update_publisher.publish_error(
                 self.taskItem.account_id,
                 self.taskItem.id,
@@ -182,38 +203,39 @@ class TaskHandler:
             raise e
 
     def _work_loop(self):
+        progress_percent = 0
         while True:
             try:
                 row_info: RowInfo = self.file_worker.get_next_row()
             except Exception as e:
-                logging.error("TaskHandler: Couldn't get next row: ", e)
-                self.task_update_publisher.publish_error(self.taskItem.account_id, self.taskItem.id, "Couldn't get next row", str(e), 0)
+                logger.error("TaskHandler: Couldn't get next row: ", e)
+                self.task_update_publisher.publish_error(
+                    self.taskItem.account_id, self.taskItem.id, "Couldn't get next row", str(e), progress_percent)
                 raise e
             if row_info.product_name_variations is None or row_info.product_quantity is None:
-                logging.info("TaskHandler: No more rows to process: ", str(row_info))
+                logger.info(
+                    f"TaskHandler: No more rows to process: {row_info}")
                 break
 
             progress = self.file_worker.get_progress()
-            progress_percent = math.floor(progress.current_input_row / progress.total_number_of_rows * 100)
+            progress_percent = math.floor(
+                progress.current_input_row / progress.total_number_of_rows * 100)
             self.task_update_publisher.publish_progress_update(
                 self.taskItem.account_id,
                 self.taskItem.id,
                 json.dumps(progress.to_json()),
                 progress_percent)
 
-            self.buy_lowest_price_for_product(progress.original_product_name, row_info.product_name_variations, row_info.product_quantity)
-        self.task_update_publisher.publish_success(
-            self.taskItem.account_id,
-            self.taskItem.id,
-            "Задачата приключи успешно!",
-            100)
+            self.buy_lowest_price_for_product(
+                progress.original_product_name, row_info.product_name_variations, row_info.product_quantity)
 
     def buy_lowest_price_for_product(self, productName: str, productSearchNames: list, quantity: int):
-        logging.info("Getting prices for: %s", productName)
-        all_product_prices: List[ProductInfo] = self._get_all_prices(productSearchNames)
+        logger.info(f"Getting prices for: {productName}")
+        all_product_prices: List[ProductInfo] = self._get_all_prices(
+            productSearchNames)
         best_product: ProductInfo | None = None
         for product in all_product_prices:
-            logging.info("Product: %s, Price: %f", product.name, product.price)
+            logger.info(f"Product: {product.name}, Price: {product.price}")
             if best_product is None or product.price < best_product.price:
                 best_product = product
             elif product.price == best_product.price:
@@ -221,40 +243,51 @@ class TaskHandler:
                     best_product = product
 
         if best_product is None:
-            logging.error("Couldn't find product: " + productName)
+            logger.error(f"Couldn't find product: {productName}")
             self._store_unbought_product(productName, quantity)
             return
 
-        logging.info("Best product: %s, Price: %f, added To %s", best_product.name, best_product.price, best_product.scraper.get_name())
-        if product.scraper.add_product_to_cart(best_product.name, quantity):
-            self._store_bought_product(productName, all_product_prices, product.scraper.get_name())
-        else:
-            logging.error("Product found, but couldn\'t be added to cart: " + productName)
-            self._store_unbought_product(productName, quantity)
+        logger.info(
+            f"Best product: {best_product.name}, Price: {best_product.price}, added To {best_product.scraper.get_name()}")
+        try:
+            if product.scraper.add_product_to_cart(best_product.name, quantity):
+                self._store_bought_product(
+                    productName, all_product_prices, product.scraper.get_name())
+            else:
+                logger.error(
+                    f"Product found, but couldn't be added to cart: {productName}")
+                self._store_unbought_product(productName, quantity)
+        except Exception as e:
+            raise Exception(f"{product.scraper.get_name()}: {str(e)}")
 
     def _get_all_prices(self, productSearchNames: list) -> List[ProductInfo]:
-        print("TaskHandler: Getting all prices for: ", productSearchNames)
+        logger.info(
+            f"TaskHandler: Getting all prices for: {productSearchNames}")
+        result: List[ProductInfo] = []
         for scraper in self.scrapers:
-            result: List[ProductInfo] = []
             try:
-                name, price = scraper.get_product_name_and_price(productSearchNames)
+                name, price = scraper.get_product_name_and_price(
+                    productSearchNames)
             except StaleElementReferenceException:
                 # retry
                 scraper.refresh_page()
                 try:
-                    name, price = scraper.get_product_name_and_price(productSearchNames)
+                    name, price = scraper.get_product_name_and_price(
+                        productSearchNames)
                 except Exception as e:
-                    logging.error("TaskHandler: Couldn't get product name and price: ", e)
+                    logger.error(
+                        "TaskHandler: Couldn't get product name and price: ", e)
                     continue
             if price != math.inf:
                 result.append(ProductInfo(scraper, name, price))
 
-        # print("TaskHandler: All prices: ", str(result))
-        print("TaskHandler: All prices:", [(info.scraper, info.name, info.price) for info in result])
+        logger.info(
+            f"TaskHandler: All prices: {[(info.scraper.get_name(), info.name, info.price) for info in result]}")
         return result
 
     def _store_bought_product(self, original_product_name: str, all_pharmacy_product_infos: List[ProductInfo], bought_from_distributor: str):
-        bought_product = BoughtProductInfo(original_product_name, all_pharmacy_product_infos, bought_from_distributor)
+        bought_product = BoughtProductInfo(
+            original_product_name, all_pharmacy_product_infos, bought_from_distributor)
         self.bought_products.append(bought_product)
 
     def _store_unbought_product(self, product_name: str, quantity: int):
@@ -275,7 +308,7 @@ class TaskHandler:
                         scraper=product_info.scraper,
                         name=product_info.name,
                         price=product_info.price
-                     ) for product_info in bought_product.all_pharmacy_product_infos
+                    ) for product_info in bought_product.all_pharmacy_product_infos
                 ],
                 bought_from_distributor=bought_product.bought_from_distributor
             )
