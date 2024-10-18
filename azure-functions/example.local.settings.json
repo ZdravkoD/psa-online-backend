@@ -1,0 +1,18 @@
+{
+    "IsEncrypted": false,
+    "Values": {
+      "FUNCTIONS_WORKER_RUNTIME": "python",
+      "psaonline_SERVICEBUS": "*****",
+      "psaonline_SERVICEBUS_QUEUE": "task-queue-local",
+      "psaonline_SERVICEBUS_QUEUE_TASK_UPDATES": "task-updates-local",
+      "AZURE_BLOB_STORAGE_CONNECTION_STRING": "*****",
+      "AZURE_BLOB_STORAGE_INPUT_FILES_CONTAINER_NAME": "input-files-local",
+      "AZURE_WEB_PUBSUB_ENDPOINT": "https://psa-pubsub-local.webpubsub.azure.com",
+      "AZURE_WEB_PUBSUB_ACCESS_KEY": "*****",
+      "AZURE_COSMOS_DB_CONNECTION_STRING": "mongodb://*****"
+    },
+    "Host": {
+        "CORS": "*"
+    }    
+  }
+  

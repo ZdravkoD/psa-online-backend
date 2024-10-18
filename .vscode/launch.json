@@ -2,10 +2,23 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Attach to Python Functions",
-            "type": "python",
+            "name": "Debug Run Scraper",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scraper/scraper/main.py",
+            "console": "integratedTerminal",
+            "python": "${workspaceFolder}/scraper/.venv/bin/python"
+        },
+        {
+            "name": "Python Debugger: Attach using Process Id",
+            "type": "debugpy",
             "request": "attach",
-            "port": 9091,
+            "processId": "${command:pickProcess}"
+        },
+        {
+            "name": "Attach to Python Functions",
+            "type": "debugpy",
+            "request": "attach",
             "preLaunchTask": "func: host start"
         }
     ]
