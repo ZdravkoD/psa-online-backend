@@ -7,7 +7,8 @@ from typing import List
 class RowInfo:
     def __init__(self, original_product_name: str | None, product_name_variations: List[str] | None, product_quantity: int | None):
         self.original_product_name = original_product_name
-        self.product_name_variations = product_name_variations
+        self.product_name_variations = product_name_variations if product_name_variations is not None else []
+        self.custom_product_name_variations = []
         self.product_quantity = product_quantity
 
     def __str__(self) -> str:

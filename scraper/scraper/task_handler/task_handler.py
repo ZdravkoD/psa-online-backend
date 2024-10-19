@@ -4,6 +4,7 @@ import math
 import os
 from typing import List
 
+from dal.cosmosdb_client import CosmosDbClient
 from selenium.common.exceptions import StaleElementReferenceException
 from messaging.messaging import ScraperTaskItem
 from pharmacy_distributors.common.browser_common import BrowserCommon
@@ -210,6 +211,17 @@ class TaskHandler:
                 logger.info(
                     f"TaskHandler: No more rows to process: {row_info}")
                 break
+            try:
+                self._get_custom_product_name_variations(row_info)
+            except Exception as e:
+                logger.error(
+                    "TaskHandler: Couldn't get custom product name variations: ", e)
+                self.task_update_publisher.publish_error(
+                    taskItem=self.taskItem,
+                    message="Неуспешно извличане на вариации на продукт",
+                    detailed_error_message=str(e),
+                    progress=progress_percent)
+                raise e
 
             progress = self.file_worker.get_progress()
             progress_percent = math.floor(
@@ -220,12 +232,13 @@ class TaskHandler:
                 progress=progress_percent)
 
             self.buy_lowest_price_for_product(
-                progress.original_product_name, row_info.product_name_variations, row_info.product_quantity)
+                productName=progress.original_product_name,
+                productSearchNames=row_info.custom_product_name_variations + row_info.product_name_variations,
+                quantity=row_info.product_quantity)
 
     def buy_lowest_price_for_product(self, productName: str, productSearchNames: list, quantity: int):
         logger.info(f"Getting prices for: {productName}")
-        all_product_prices: List[ProductInfo] = self._get_all_prices(
-            productSearchNames)
+        all_product_prices: List[ProductInfo] = self._get_all_prices(productSearchNames)
         best_product: ProductInfo | None = None
         for product in all_product_prices:
             logger.info(f"Product: {product.name}, Price: {product.price}")
@@ -315,3 +328,34 @@ class TaskHandler:
             report.unbought_products.append(unbought_product_dict)
 
         return report
+
+    def _get_custom_product_name_variations(self, row_info: RowInfo):
+        """
+        Fetches custom product name variations from the CosmosDB database
+        """
+        cosmos_db_client = CosmosDbClient()
+        items = cosmos_db_client.read_items(
+            collection_name="product_name_variations",
+            filter={"original_product_name": row_info.original_product_name},
+            projection={"_id": 0, "custom_product_name_variations": 1}
+        )
+
+        if not items:
+            # No items found, insert a new document
+            cosmos_db_client.create_item(
+                collection_name="product_name_variations",
+                document={
+                    "original_product_name": row_info.original_product_name,
+                    "generated_product_variations": row_info.product_name_variations,
+                    "custom_product_name_variations": []
+                }
+            )
+            row_info.custom_product_name_variations = []
+        else:
+            # Update row_info's custom_product_variations
+            row_info.custom_product_name_variations = items[0].get("custom_product_name_variations", [])
+            cosmos_db_client.update_item(
+                collection_name="product_name_variations",
+                item_id=items[0].get("id"),
+                document={"generated_product_variations": row_info.product_name_variations}
+            )

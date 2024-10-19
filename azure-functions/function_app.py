@@ -280,7 +280,7 @@ def tasks(req: func.HttpRequest) -> func.HttpResponse:
             status_code=400,
             mimetype="application/json")
 
-    tasks = cosmosDbClient.read_items(collection_name="tasks", filter=filter, projection=projection, sort=sort, skip=skip, limit=limit)
+    tasks = cosmosDbClient.read_items(collection_name="tasks", filter=filter, projection=projection, sort=sort, skip=skip, limit=limit)["items"]
 
     return func.HttpResponse(body=json.dumps(tasks, cls=CustomJSONEncoder), status_code=200, mimetype="application/json")
 
@@ -313,7 +313,7 @@ def _tasks_parse_params(req: func.HttpRequest) -> Tuple[Optional[dict], Optional
 def get_pharmacies(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request to get all pharmacies.')
 
-    tasks = cosmosDbClient.read_items(collection_name="pharmacies")
+    tasks = cosmosDbClient.read_items(collection_name="pharmacies")["items"]
 
     return func.HttpResponse(body=json.dumps(tasks), status_code=200, mimetype="application/json")
 
@@ -322,7 +322,7 @@ def get_pharmacies(req: func.HttpRequest) -> func.HttpResponse:
 def get_distributors(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request to get all distributors.')
 
-    tasks = cosmosDbClient.read_items(collection_name="distributors")
+    tasks = cosmosDbClient.read_items(collection_name="distributors")["items"]
 
     return func.HttpResponse(body=json.dumps(tasks), status_code=200, mimetype="application/json")
 
@@ -428,6 +428,111 @@ def get_input_file(req: func.HttpRequest) -> func.HttpResponse:
     return func.HttpResponse(body=blob_data, status_code=200, mimetype="application/octet-stream", headers={
         "Content-Disposition": f"attachment; filename={filename}"
     })
+
+
+@app.route(route="product-names", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
+def get_product_names(req: func.HttpRequest) -> func.HttpResponse:
+    logging.info('Python HTTP trigger function processed a request to get product names.')
+
+    try:
+        filter, projection, sort, skip, limit = _product_names_parse_params(req=req)
+    except ValueError as err:
+        return func.HttpResponse(
+            body=json.dumps({"error": str(err)}, cls=CustomJSONEncoder),
+            status_code=400,
+            mimetype="application/json")
+
+    result = cosmosDbClient.read_items(
+        collection_name="product_name_variations",
+        filter=filter,
+        projection=projection,
+        sort=sort,
+        skip=skip,
+        limit=limit or 50  # Default page size is 50
+    )
+
+    return func.HttpResponse(body=json.dumps(result, cls=CustomJSONEncoder), status_code=200, mimetype="application/json")
+
+
+def _product_names_parse_params(req: func.HttpRequest) -> Tuple[Optional[dict], Optional[dict], Optional[dict], Optional[int], Optional[int]]:
+    # Parse filter param
+    filter_param = req.params.get("filter", None)
+    filter_dict = parse_json_param(filter_param, "filter")
+
+    # Ensure filtering by original_product_name if provided
+    if filter_dict and "original_product_name" in filter_dict:
+        filter_dict = {"original_product_name": {"$regex": filter_dict["original_product_name"], "$options": "i"}}
+
+    # Parse projection param
+    projection_param = req.params.get("projection", None)
+    projection_dict = parse_json_param(projection_param, "projection")
+
+    # Parse sort param
+    sort_param = req.params.get("sort", None)
+    sort_dict = parse_json_param(sort_param, "sort")
+
+    # Parse skip param (integer)
+    skip_param = req.params.get("skip", None)
+    skip = parse_int_param(skip_param, "skip")
+
+    # Parse limit param (integer)
+    limit_param = req.params.get("limit", None)
+    limit = parse_int_param(limit_param, "limit")
+
+    return filter_dict, projection_dict, sort_dict, skip, limit
+
+
+@app.route(route="product-names", auth_level=func.AuthLevel.ANONYMOUS, methods=["PATCH"])
+def update_product_name(req: func.HttpRequest) -> func.HttpResponse:
+    logging.info('Python HTTP trigger function processed a request to update a product name.')
+
+    try:
+        req_body = req.get_json()
+    except ValueError:
+        return func.HttpResponse(
+            "Invalid JSON payload.",
+            status_code=400
+        )
+
+    product_id = req_body.get("id")
+    if not product_id:
+        return func.HttpResponse(
+            "Please provide the product ID in the request body.",
+            status_code=400
+        )
+
+    update_fields = {}
+    if "custom_product_name_variations" in req_body:
+        update_fields["custom_product_name_variations"] = req_body["custom_product_name_variations"]
+
+    if not update_fields:
+        return func.HttpResponse(
+            "No valid fields to update provided.",
+            status_code=400
+        )
+
+    try:
+        modified_count = cosmosDbClient.update_item(
+            collection_name="product_name_variations",
+            item_id=product_id,
+            document=update_fields
+        )
+
+        if modified_count == 0:
+            return func.HttpResponse(
+                "Product name not found.",
+                status_code=404
+            )
+
+        updated_product = cosmosDbClient.read_item_by_id("product_name_variations", product_id)
+    except Exception as e:
+        logging.error(f"Failed to update product name: {e}")
+        return func.HttpResponse(
+            "Failed to update product name.",
+            status_code=500
+        )
+
+    return func.HttpResponse(body=json.dumps(updated_product, cls=CustomJSONEncoder), status_code=200, mimetype="application/json")
 
 
 @app.service_bus_queue_trigger(arg_name="msg", queue_name=os.getenv("psaonline_SERVICEBUS_QUEUE_TASK_UPDATES", "task-updates"), connection="psaonline_SERVICEBUS")
