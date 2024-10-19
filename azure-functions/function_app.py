@@ -13,7 +13,7 @@ from pubsub_client import AzureWebPubSubServiceClient
 from werkzeug.utils import secure_filename
 
 from cosmosdb_client import CosmosDbClient
-from messaging import FileType, ScraperTaskActionType, ScraperTaskItem, ScraperTaskItemStatus, ScraperTaskUpdates, TaskStatus
+from messaging import FileType, ScraperTaskActionType, ScraperTaskItem, ScraperTaskItemStatus, TaskStatus
 from json_encoder import CustomJSONEncoder
 
 app = func.FunctionApp()
@@ -117,6 +117,7 @@ def _create_task_json_content(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     task_item = ScraperTaskItem(
+        id=ObjectId(),
         account_id=ObjectId(),
         file_name="",
         file_data=json_content,
@@ -126,6 +127,11 @@ def _create_task_json_content(req: func.HttpRequest) -> func.HttpResponse:
         task_type=ScraperTaskActionType.START_OVER,
         date_created=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
         date_updated=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        status=ScraperTaskItemStatus(
+            status=TaskStatus.IN_PROGRESS,
+            message="Задачата стартира...",
+            progress=0
+        ),
         report=None
     )
     task_item.status = ScraperTaskItemStatus(
@@ -133,7 +139,7 @@ def _create_task_json_content(req: func.HttpRequest) -> func.HttpResponse:
         message="Задачата стартира...",
         progress=0
     )
-    inserted_id = cosmosDbClient.create_item("tasks", task_item.to_json())
+    inserted_id = cosmosDbClient.create_item("tasks", task_item.to_insert_dict())
     task_item.id = inserted_id
 
     send_message_to_servicebus_queue(task_item.to_json())
@@ -210,6 +216,7 @@ def _create_task_file_content(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     task_item = ScraperTaskItem(
+        id=ObjectId(),
         account_id=ObjectId(),
         file_name=filename,
         file_data=blob_storage_url,
@@ -219,6 +226,11 @@ def _create_task_file_content(req: func.HttpRequest) -> func.HttpResponse:
         task_type=ScraperTaskActionType.START_OVER,
         date_created=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
         date_updated=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        status=ScraperTaskItemStatus(
+            status=TaskStatus.IN_PROGRESS,
+            message="Задачата стартира...",
+            progress=0
+        ),
         report=None
     )
     task_item.status = ScraperTaskItemStatus(
@@ -227,7 +239,7 @@ def _create_task_file_content(req: func.HttpRequest) -> func.HttpResponse:
         progress=0
     )
 
-    inserted_id = cosmosDbClient.create_item("tasks", task_item.to_json())
+    inserted_id = cosmosDbClient.create_item("tasks", task_item.to_insert_dict())
     task_item.id = inserted_id
 
     send_message_to_servicebus_queue(task_item.to_json())
@@ -418,7 +430,7 @@ def get_input_file(req: func.HttpRequest) -> func.HttpResponse:
     })
 
 
-@app.service_bus_queue_trigger(arg_name="msg", queue_name=os.getenv("psaonline_SERVICEBUS_QUEUE_TASK_UPDATES", ""), connection="psaonline_SERVICEBUS")
+@app.service_bus_queue_trigger(arg_name="msg", queue_name=os.getenv("psaonline_SERVICEBUS_QUEUE_TASK_UPDATES", "task-updates"), connection="psaonline_SERVICEBUS")
 def servicebus_trigger__task_updates(msg: func.ServiceBusMessage):
     """
     Example message body:
@@ -432,15 +444,15 @@ def servicebus_trigger__task_updates(msg: func.ServiceBusMessage):
     """
     logging.info(f'Received Service Bus message for task update: {msg.get_body().decode()}')
     msg_dict = json.loads(msg.get_body().decode())
-    msg_object = ScraperTaskUpdates(**msg_dict)
-    task_id: str = str(msg_object.task_id)
+    msg_object = ScraperTaskItem.from_dict(msg_dict)
+    task_id: str = str(msg_object.id)
 
     task: ScraperTaskItem = ScraperTaskItem.from_dict(cosmosDbClient.read_item_by_id("tasks", task_id) or {})
     task.date_updated = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     task.status = msg_object.status
     task.report = msg_object.report
     task.image_urls = msg_object.image_urls
-    cosmosDbClient.update_item("tasks", task.id, task.to_update_dict())
+    cosmosDbClient.update_item("tasks", task.id, task.to_insert_dict())
 
     AzureWebPubSubServiceClient().send_task_update_to_all(msg_dict)
 

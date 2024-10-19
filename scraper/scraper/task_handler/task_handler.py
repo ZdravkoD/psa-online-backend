@@ -111,11 +111,10 @@ class TaskHandler:
             logger.error(
                 "TaskHandler: Couldn't initialize the task handler: ", e)
             self.task_update_publisher.publish_error(
-                self.taskItem.account_id,
-                self.taskItem.id,
-                "Couldn't initialize the task handler",
-                str(e),
-                0)
+                taskItem=self.taskItem,
+                message="Couldn't initialize the task handler",
+                detailed_error_message=str(e),
+                progress=0)
             raise e
 
     def handle_task(self):
@@ -128,12 +127,7 @@ class TaskHandler:
 
             self._work_loop()
 
-            self.task_update_publisher.publish_success(
-                account_id=self.taskItem.account_id,
-                task_id=self.taskItem.id,
-                message="Задачата приключи успешно!",
-                progress=100,
-                report=self._generate_report().__dict__())
+            self.task_update_publisher.publish_success(self.taskItem, self._generate_report().__dict__())
         except Exception as e:
             logger.exception(f"TaskHandler: Failed to handle the task: {str(e)}")
             blob_client = AzureBlobClient()
@@ -155,11 +149,10 @@ class TaskHandler:
                 blob_client.upload_blob_to_output_container(screenshotName, screenshotPng[:])
 
             self.task_update_publisher.publish_error(
-                self.taskItem.account_id,
-                self.taskItem.id,
-                "Неуспешно завършване на задачата!",
-                str(e) if str(e).strip() != "" else str(e.__traceback__),
-                0,
+                taskItem=self.taskItem,
+                message="Неуспешно завършване на задачата!",
+                detailed_error_message=str(e) if str(e).strip() != "" else str(e.__traceback__),
+                progress=0,
                 image_urls=image_urls)
             return
 
@@ -183,11 +176,10 @@ class TaskHandler:
         except Exception as e:
             logger.error("TaskHandler: Couldn't open the file: ", e)
             self.task_update_publisher.publish_error(
-                self.taskItem.account_id,
-                self.taskItem.id,
-                "Couldn't open the file: " + self.taskItem.file_name,
-                str(e),
-                0)
+                taskItem=self.taskItem,
+                message="Couldn't open the file: " + self.taskItem.file_name,
+                detailed_error_message=str(e),
+                progress=0)
             raise e
 
         try:
@@ -195,11 +187,10 @@ class TaskHandler:
         except Exception as e:
             logger.error("TaskHandler: Couldn't validate the input file: ", e)
             self.task_update_publisher.publish_error(
-                self.taskItem.account_id,
-                self.taskItem.id,
-                "Couldn't validate the input file: " + self.taskItem.file_name,
-                str(e),
-                0)
+                taskItem=self.taskItem,
+                message="Couldn't validate the input file: " + self.taskItem.file_name,
+                detailed_error_message=str(e),
+                progress=0)
             raise e
 
     def _work_loop(self):
@@ -210,7 +201,10 @@ class TaskHandler:
             except Exception as e:
                 logger.error("TaskHandler: Couldn't get next row: ", e)
                 self.task_update_publisher.publish_error(
-                    self.taskItem.account_id, self.taskItem.id, "Couldn't get next row", str(e), progress_percent)
+                    taskItem=self.taskItem,
+                    message="Couldn't get next row",
+                    detailed_error_message=str(e),
+                    progress=progress_percent)
                 raise e
             if row_info.product_name_variations is None or row_info.product_quantity is None:
                 logger.info(
@@ -221,10 +215,9 @@ class TaskHandler:
             progress_percent = math.floor(
                 progress.current_input_row / progress.total_number_of_rows * 100)
             self.task_update_publisher.publish_progress_update(
-                self.taskItem.account_id,
-                self.taskItem.id,
-                json.dumps(progress.to_json()),
-                progress_percent)
+                taskItem=self.taskItem,
+                message=json.dumps(progress.to_json()),
+                progress=progress_percent)
 
             self.buy_lowest_price_for_product(
                 progress.original_product_name, row_info.product_name_variations, row_info.product_quantity)
