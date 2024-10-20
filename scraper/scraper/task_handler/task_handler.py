@@ -16,6 +16,7 @@ from files.file_worker_factory import FileWorkerFactory
 from files.azure_blob_client import AzureBlobClient
 from task_handler.task_update_publisher import TaskUpdatePublisher
 from psa_logger.logger import get_current_logfile_name, get_current_logfile_data
+import concurrent.futures
 
 # Create a logger for this module
 logger = logging.getLogger(__name__)
@@ -241,12 +242,12 @@ class TaskHandler:
                 productSearchNames=row_info.custom_product_name_variations + row_info.product_name_variations,
                 quantity=row_info.product_quantity)
 
-    def buy_lowest_price_for_product(self, productName: str, productSearchNames: list, quantity: int):
+    def buy_lowest_price_for_product(self, productName: str, productSearchNames: List[str], quantity: int):
         logger.info(f"Getting prices for: {productName}")
         all_product_prices: List[ProductInfo] = self._get_all_prices(productSearchNames)
         best_product: ProductInfo | None = None
         for product in all_product_prices:
-            logger.info(f"Product: {product.name}, Price: {product.price}")
+            logger.info(f"Product ({product.scraper.get_name()}): {product.name}, Price: {product.price}")
             if best_product is None or product.price < best_product.price:
                 best_product = product
             elif product.price == best_product.price:
@@ -261,36 +262,46 @@ class TaskHandler:
         logger.info(
             f"Best product: {best_product.name}, Price: {best_product.price}, added To {best_product.scraper.get_name()}")
         try:
-            if product.scraper.add_product_to_cart(best_product.name, quantity):
+            if best_product.scraper.add_product_to_cart(best_product.name, quantity):
                 self._store_bought_product(
-                    productName, all_product_prices, product.scraper.get_name())
+                    productName, all_product_prices, best_product.scraper.get_name())
             else:
                 logger.error(
                     f"Product found, but couldn't be added to cart: {productName}")
                 self._store_unbought_product(productName, quantity)
         except Exception as e:
-            raise Exception(f"{product.scraper.get_name()}: {str(e)}")
+            raise Exception(f"{best_product.scraper.get_name()}: {str(e)}")
 
-    def _get_all_prices(self, productSearchNames: list) -> List[ProductInfo]:
+    def _get_all_prices(self, productSearchNames: List[str]) -> List[ProductInfo]:
         logger.info(
             f"TaskHandler: Getting all prices for: {productSearchNames}")
         result: List[ProductInfo] = []
-        for scraper in self.scrapers:
+
+        def get_product_info(scraper: BrowserCommon, productSearchNames: List[str]) -> ProductInfo | None:
             try:
-                scraped_product_info: ScrapedProductInfo = scraper.get_product_name_and_price(
-                    productSearchNames)
+                scraped_product_info: ScrapedProductInfo = scraper.get_product_name_and_price(productSearchNames)
             except StaleElementReferenceException:
                 # retry
                 scraper.refresh_page()
                 try:
-                    scraped_product_info: ScrapedProductInfo = scraper.get_product_name_and_price(
-                        productSearchNames)
+                    scraped_product_info: ScrapedProductInfo = scraper.get_product_name_and_price(productSearchNames)
+                except Exception as e:
+                    logger.error("TaskHandler: Couldn't get product name and price: ", e)
+                    return None
+            if scraped_product_info.price != math.inf:
+                return ProductInfo(scraper, scraped_product_info.name, scraped_product_info.price, scraped_product_info.is_on_promotion)
+            return None
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future_to_scraper = {executor.submit(get_product_info, scraper, productSearchNames): scraper for scraper in self.scrapers}
+            for future in concurrent.futures.as_completed(future_to_scraper):
+                try:
+                    product_info = future.result()
+                    if product_info is not None:
+                        result.append(product_info)
                 except Exception as e:
                     logger.error(
-                        "TaskHandler: Couldn't get product name and price: ", e)
-                    continue
-            if scraped_product_info.price != math.inf:
-                result.append(ProductInfo(scraper, scraped_product_info.name, scraped_product_info.price, scraped_product_info.is_on_promotion))
+                        f"TaskHandler: Couldn't get product info with futures: {str(e)}")
 
         logger.info(
             f"TaskHandler: All prices: {[(info.scraper.get_name(), info.name, info.price) for info in result]}")
@@ -343,7 +354,7 @@ class TaskHandler:
         items = cosmos_db_client.read_items(
             collection_name="product_name_variations",
             filter={"original_product_name": row_info.original_product_name},
-            projection={"_id": 0, "custom_product_name_variations": 1}
+            projection={"custom_product_name_variations": 1}
         )
 
         if not items:

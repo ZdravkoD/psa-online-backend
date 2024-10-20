@@ -88,7 +88,11 @@ class ExcelWorker(FileWorker):
         max_row = 0
         for row in self.inputSheet.iter_rows():
             if any(cell.value is not None for cell in row):
-                max_row = row[0].row
+                try:
+                    max_row = row[1].row
+                except Exception as e:
+                    logger.exception(f"ExcelWorker: (Ред: {max_row + 1}) Неуспешно преброяване на редовете във файла: {str(e)}")
+                    raise Exception(f"ExcelWorker: (Ред: {max_row + 1}) Неуспешно преброяване на редовете във файла: {str(e)}")
         return max_row
 
     def get_next_row(self) -> RowInfo:
