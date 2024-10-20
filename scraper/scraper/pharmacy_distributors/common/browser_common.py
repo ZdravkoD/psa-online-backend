@@ -4,6 +4,7 @@ from typing import List, Tuple, Deque
 import logging
 from collections import deque
 
+from pharmacy_distributors.common.models import ScrapedProductInfo
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.webdriver import WebDriver
@@ -81,7 +82,7 @@ class BrowserCommon():
     def refresh_page(self):
         raise NotImplementedError("Subclasses must implement this method")
 
-    def get_product_name_and_price(self, product_id) -> Tuple[str, float]:
+    def get_product_name_and_price(self, product_id) -> ScrapedProductInfo:
         raise NotImplementedError("Subclasses must implement this method")
 
     def add_product_to_cart(self, product_id: str, quantity: int):

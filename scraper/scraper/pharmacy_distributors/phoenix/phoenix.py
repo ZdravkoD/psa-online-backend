@@ -2,6 +2,7 @@ import logging
 import math
 from typing import Tuple
 
+from pharmacy_distributors.common.models import ScrapedProductInfo
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -155,7 +156,7 @@ class PhoenixPharma(BrowserCommon):
         product_name = product_name[:product_name.find("\n")+1]
         return product_name
 
-    def get_product_name_and_price(self, productSearchNames: list) -> Tuple[str, float]:
+    def get_product_name_and_price(self, productSearchNames: list) -> ScrapedProductInfo:
         logger.info("PhoenixPharma:get_product_name_and_price(): productSearchNames=" + str(productSearchNames))
         element = None
         for productName in productSearchNames:
@@ -173,11 +174,23 @@ class PhoenixPharma(BrowserCommon):
             price_header_position = self._get_price_header_position()
             if price_header_position == -1:
                 logger.error("PhoenixPharma: Price header position was not found...")
-                return "", math.inf
+                return ScrapedProductInfo(
+                    name="",
+                    price=math.inf,
+                    is_on_promotion=False
+                )
 
-            return self._get_product_name(), self._get_product_price(price_header_position)
+            return ScrapedProductInfo(
+                name=self._get_product_name(),
+                price=self._get_product_price(price_header_position),
+                is_on_promotion=False
+            )
 
-        return "", math.inf
+        return ScrapedProductInfo(
+            name="",
+            price=math.inf,
+            is_on_promotion=False
+        )
 
     def add_product_to_cart(self, quantity):
         logger.info("PhoenixPharma:add_product_to_cart(): quantity=" + str(quantity))

@@ -5,6 +5,7 @@ import os
 from typing import List
 
 from dal.cosmosdb_client import CosmosDbClient
+from pharmacy_distributors.common.models import ScrapedProductInfo
 from selenium.common.exceptions import StaleElementReferenceException
 from messaging.messaging import ScraperTaskItem
 from pharmacy_distributors.common.browser_common import BrowserCommon
@@ -21,10 +22,11 @@ logger = logging.getLogger(__name__)
 
 
 class ProductInfo:
-    def __init__(self, scraper: BrowserCommon, name: str, price: float):
+    def __init__(self, scraper: BrowserCommon, name: str, price: float, is_on_promotion: bool):
         self.scraper = scraper
         self.name = name
         self.price = price
+        self.is_on_promotion = is_on_promotion
 
         if self.scraper is None:
             raise ValueError("Scraper must not be None")
@@ -32,16 +34,19 @@ class ProductInfo:
             raise ValueError("Product name must be a string")
         if not isinstance(price, float):
             raise ValueError("Product price must be a float")
+        if not isinstance(is_on_promotion, bool):
+            raise ValueError("Is on promotion must be a boolean")
 
     # string representation of the object
     def __str__(self):
-        return f"ProductInfo(scraper={self.scraper}, name={self.name}, price={self.price})"
+        return f"ProductInfo(scraper={self.scraper}, name={self.name}, price={self.price}, is_on_promotion={self.is_on_promotion})"
 
     def __dict__(self):
         return {
             "distributor": self.scraper.name,
             "name": self.name,
-            "price": self.price
+            "price": self.price,
+            "is_on_promotion": self.is_on_promotion
         }
 
 
@@ -272,20 +277,20 @@ class TaskHandler:
         result: List[ProductInfo] = []
         for scraper in self.scrapers:
             try:
-                name, price = scraper.get_product_name_and_price(
+                scraped_product_info: ScrapedProductInfo = scraper.get_product_name_and_price(
                     productSearchNames)
             except StaleElementReferenceException:
                 # retry
                 scraper.refresh_page()
                 try:
-                    name, price = scraper.get_product_name_and_price(
+                    scraped_product_info: ScrapedProductInfo = scraper.get_product_name_and_price(
                         productSearchNames)
                 except Exception as e:
                     logger.error(
                         "TaskHandler: Couldn't get product name and price: ", e)
                     continue
-            if price != math.inf:
-                result.append(ProductInfo(scraper, name, price))
+            if scraped_product_info.price != math.inf:
+                result.append(ProductInfo(scraper, scraped_product_info.name, scraped_product_info.price, scraped_product_info.is_on_promotion))
 
         logger.info(
             f"TaskHandler: All prices: {[(info.scraper.get_name(), info.name, info.price) for info in result]}")
@@ -313,7 +318,8 @@ class TaskHandler:
                     ProductInfo(
                         scraper=product_info.scraper,
                         name=product_info.name,
-                        price=product_info.price
+                        price=product_info.price,
+                        is_on_promotion=product_info.is_on_promotion
                     ) for product_info in bought_product.all_pharmacy_product_infos
                 ],
                 bought_from_distributor=bought_product.bought_from_distributor
