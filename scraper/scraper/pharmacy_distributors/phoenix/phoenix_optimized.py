@@ -3,6 +3,7 @@ import math
 from urllib.parse import quote
 import requests
 import xmltodict
+from pharmacy_distributors.common.models import ScrapedProductInfo
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 
@@ -69,7 +70,7 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         self.lastSearchWasEmpty = False
         return result_product_name, result_product_price
 
-    def get_product_name_and_price(self, productSearchNames: list):
+    def get_product_name_and_price(self, productSearchNames: list) -> ScrapedProductInfo:
         logger.info("PhoenixPharmaOptimized:get_product_name_and_price(): productSearchNames=" + str(productSearchNames))
         for productName in productSearchNames:
             result_product_name, result_product_price = self._search_for_product_optimized(productName)
@@ -77,9 +78,17 @@ class PhoenixPharmaOptimized(PhoenixPharma):
             if result_product_name is None:
                 continue
 
-            return result_product_name, result_product_price
+            return ScrapedProductInfo(
+                name=result_product_name,
+                price=result_product_price if result_product_price is not None else math.inf,
+                is_on_promotion=False
+            )
 
-        return "", math.inf
+        return ScrapedProductInfo(
+            name="",
+            price=math.inf,
+            is_on_promotion=False
+        )
 
     def _add_product_to_cart_optimized(self, quantity):
         plus_button = self.browser.find_element(By.XPATH, self.PRODUCT_PLUS_BUTTON_XPATH)

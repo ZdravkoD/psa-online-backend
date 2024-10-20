@@ -88,7 +88,11 @@ class ExcelWorker(FileWorker):
         max_row = 0
         for row in self.inputSheet.iter_rows():
             if any(cell.value is not None for cell in row):
-                max_row = row[0].row
+                try:
+                    max_row = row[1].row
+                except Exception as e:
+                    logger.exception(f"ExcelWorker: (Ред: {max_row + 1}) Неуспешно преброяване на редовете във файла: {str(e)}")
+                    raise Exception(f"ExcelWorker: (Ред: {max_row + 1}) Неуспешно преброяване на редовете във файла: {str(e)}")
         return max_row
 
     def get_next_row(self) -> RowInfo:
@@ -98,23 +102,16 @@ class ExcelWorker(FileWorker):
         self.nrows = self.getNumberOfRows() + 1
         # self.nrows = 5
 
-        # while self.currentInputRow < self.nrows:
-        for row in self.inputSheet.iter_rows(min_row=self.currentInputRow, max_row=self.inputSheet.max_row, max_col=4):
+        for row in self.inputSheet.iter_rows(min_row=self.currentInputRow, max_row=self.nrows, max_col=4):
 
             logger.info("ExcelWorker: Reading row %d from %d", self.currentInputRow, self.nrows)
-            # self.markRowInProgress()
-            # currentInputRow = self.currentInputRow
             self.currentInputRow += 1
 
-            # self.originalProductName, currentProductNameVariations = self._generateProductNameVariations(
-            #     self.inputSheet.cell(row=currentInputRow, column=2).value
-            #     )
             logger.info(f"Product name: {row[1].value}, Product quantity: {row[3].value}")
             self.originalProductName, currentProductNameVariations = self._generateProductNameVariations(row[1].value)
             # If the products has been met, ignore it and continue to the next row
             if (self.originalProductName not in self.metProducts):
                 try:
-                    # value = self.inputSheet.cell(row=currentInputRow, column=4).value
                     value = row[3].value
                     self.currentProductQuantity = int(value)  # type: ignore
                 except TypeError:

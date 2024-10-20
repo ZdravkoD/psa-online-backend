@@ -51,12 +51,16 @@ class CosmosDbClient:
         if self.database is None:
             raise ValueError("Database is not initialized")
         collection = self.database[collection_name]
+
+        total_count = collection.count_documents(filter or {})
+
         items = list(collection.find(filter=filter, projection=projection, sort=sort, skip=skip, limit=limit))
         for item in items:
             if item.get("_id"):
                 item["id"] = str(item["_id"])
                 item.pop("_id")
-        return items
+
+        return {"items": items, "total_count": total_count}
 
     def read_item_by_id(self, collection_name: str, id: str):
         if self.database is None:

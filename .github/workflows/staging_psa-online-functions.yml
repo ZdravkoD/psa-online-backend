@@ -21,7 +21,7 @@ on:
 env:
   AZURE_FUNCTIONAPP_PACKAGE_PATH: 'azure-functions' # set this to the path to your functions directory
   PYTHON_VERSION: '3.11' # set this to the python version to use
-  DOCKER_IMAGE_NAME: 'kfzzdravko/psa-online-scraper'
+  DOCKER_IMAGE_NAME: 'psa-online-scraper'
   DOCKER_PLATFORM: 'linux/amd64' # set this for Docker build if needed
 
 jobs:
@@ -179,25 +179,23 @@ jobs:
           # }
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Login to DockerHub
-        uses: docker/login-action@v3
+      - name: Log in to ACR
+        uses: docker/login-action@v2
         with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME }}
-          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+          registry: ${{ secrets.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.AZURE_CLIENT_ID }}
+          password: ${{ secrets.AZURE_CLIENT_SECRET }}
 
       - name: Build and push Docker image with timestamp tag
         uses: docker/build-push-action@v5
         with:
           push: true
-          tags: ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
+          tags: ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
           platforms: ${{ env.DOCKER_PLATFORM }}
           context: ./scraper
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new
-
-      - name: Move new cache
-        run: (rm -rf /tmp/.buildx-cache && mv /tmp/.buildx-cache-new /tmp/.buildx-cache) || true
-
+      
       - name: Stop existing Azure Container Instance
         run: |
           if az container show --name scraper-container --resource-group psa; then
@@ -264,28 +262,36 @@ jobs:
           echo "PHOENIX_CONFIG=${PHOENIX_CONFIG}" >> $GITHUB_ENV
 
       - name: Deploy new Azure Container Instance
-        run: |
-          cd scraper
-          IMAGE_NAME=${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
-          CONTAINER_IDENTITY=/subscriptions/7b4dbc02-6b4b-42bf-90b2-92d8ed681e87/resourcegroups/psa/providers/Microsoft.ManagedIdentity/userAssignedIdentities/scraper-identity
-          # Properly escape JSON strings for environment variables
-          ESCAPED_STING_CONFIG=$(echo '${{ env.STING_CONFIG }}' | jq -sRr @json)
-          ESCAPED_PHOENIX_CONFIG=$(echo '${{ env.PHOENIX_CONFIG }}' | jq -sRr @json)          
+        uses: nick-fields/retry@v3.0.0
+        with:
+          max_attempts: 3
+          timeout_minutes: 5
+          retry_on: error
+          command: |
+            cd scraper
+            IMAGE_NAME=${{ secrets.ACR_LOGIN_SERVER }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
+            CONTAINER_IDENTITY=/subscriptions/7b4dbc02-6b4b-42bf-90b2-92d8ed681e87/resourcegroups/psa/providers/Microsoft.ManagedIdentity/userAssignedIdentities/scraper-identity
+            # Properly escape JSON strings for environment variables
+            ESCAPED_STING_CONFIG=$(echo '${{ env.STING_CONFIG }}' | jq -sRr @json)
+            ESCAPED_PHOENIX_CONFIG=$(echo '${{ env.PHOENIX_CONFIG }}' | jq -sRr @json)          
 
-          az container create \
-            --resource-group psa \
-            --name scraper-container \
-            --image ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} \
-            --environment-variables \
-              AZURE_SERVICE_BUS_CONNECTION_STRING=$AZURE_SERVICE_BUS_CONNECTION_STRING \
-              AZURE_SERVICE_BUS_QUEUE_NAME="task-queue" \
-              AZURE_SERVICE_BUS_TASK_UPDATES_QUEUE_NAME="task-updates" \
-              AZURE_BLOB_STORAGE_CONNECTION_STRING=$AZURE_BLOB_STORAGE_CONNECTION_STRING \
-              AZURE_BLOB_STORAGE_INPUT_FILES_CONTAINER_NAME="input-files" \
-              AZURE_BLOB_STORAGE_OUTPUT_FILES_CONTAINER_NAME="output-files" \
-              AZURE_BLOB_STORAGE_LOG_FILES_CONTAINER_NAME="log-files" \
-              AZURE_COSMOS_DB_CONNECTION_STRING=$AZURE_COSMOS_DB_CONNECTION_STRING \
-              STING_CONFIG=$ESCAPED_STING_CONFIG \
-              PHOENIX_CONFIG=$ESCAPED_PHOENIX_CONFIG \
-            --cpu 1 --memory 1.5 \
-            --assign-identity $CONTAINER_IDENTITY
+            az container create \
+              --resource-group psa \
+              --name scraper-container \
+              --image ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} \
+              --environment-variables \
+                AZURE_SERVICE_BUS_CONNECTION_STRING=$AZURE_SERVICE_BUS_CONNECTION_STRING \
+                AZURE_SERVICE_BUS_QUEUE_NAME="task-queue" \
+                AZURE_SERVICE_BUS_TASK_UPDATES_QUEUE_NAME="task-updates" \
+                AZURE_BLOB_STORAGE_CONNECTION_STRING=$AZURE_BLOB_STORAGE_CONNECTION_STRING \
+                AZURE_BLOB_STORAGE_INPUT_FILES_CONTAINER_NAME="input-files" \
+                AZURE_BLOB_STORAGE_OUTPUT_FILES_CONTAINER_NAME="output-files" \
+                AZURE_BLOB_STORAGE_LOG_FILES_CONTAINER_NAME="log-files" \
+                AZURE_COSMOS_DB_CONNECTION_STRING=$AZURE_COSMOS_DB_CONNECTION_STRING \
+                STING_CONFIG=$ESCAPED_STING_CONFIG \
+                PHOENIX_CONFIG=$ESCAPED_PHOENIX_CONFIG \
+              --cpu 1 --memory 1.5 \
+              --registry-username ${{ secrets.AZURE_CLIENT_ID }} \
+              --registry-password ${{ secrets.AZURE_CLIENT_SECRET }} \
+              --assign-identity $CONTAINER_IDENTITY
+        

@@ -3,6 +3,7 @@ import math
 import time
 from typing import Tuple
 
+from pharmacy_distributors.common.models import ScrapedProductInfo
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
@@ -134,6 +135,16 @@ class StingPharma(BrowserCommon):
             "StingPharma:_get_product_name(): returning: " + product_name)
         return product_name
 
+    def _get_is_product_in_promotion(self):
+        name_element = self.browser.find_element(
+            By.XPATH, "(//table[contains(@id, 'RadGridResult')]//tbody//td[not(contains(@style, 'none'))])[3]")
+        try:
+            star_element = name_element.find_element(By.XPATH, '//input[contains(@id, "PromoOpener")]')
+        except Exception:
+            return False
+
+        return star_element is not None
+
     def _search_for_product(self, product_name: str):
         logger.info(
             "StingPharma:_search_for_product(): product_name:" + product_name)
@@ -229,7 +240,7 @@ class StingPharma(BrowserCommon):
             # if self.hasInternetConnection() == False:
             self.refresh_page()
 
-    def get_product_name_and_price(self, productSearchNames: list) -> Tuple[str, float]:
+    def get_product_name_and_price(self, productSearchNames: list) -> ScrapedProductInfo:
         for productName in productSearchNames:
             logger.info(
                 "StingPharma.get_product_name_and_price(): Searching for product: '" + productName + "'...")
@@ -242,12 +253,24 @@ class StingPharma(BrowserCommon):
             if price_header_position == -1:
                 logger.error(
                     "StingPharma: Price header position was not found...")
-                return "", math.inf
+                return ScrapedProductInfo(
+                    name="",
+                    price=math.inf,
+                    is_on_promotion=False
+                )
             name_header_position = self._get_name_header_position()
 
-            return self._get_product_name(name_header_position), self._get_product_price(price_header_position)
+            return ScrapedProductInfo(
+                name=self._get_product_name(name_header_position),
+                price=self._get_product_price(price_header_position),
+                is_on_promotion=self._get_is_product_in_promotion()
+            )
 
-        return "", math.inf
+        return ScrapedProductInfo(
+            name="",
+            price=math.inf,
+            is_on_promotion=False
+        )
 
     def add_product_to_cart(self, __product_name: str, quantity: int):
         self.browser.find_element(

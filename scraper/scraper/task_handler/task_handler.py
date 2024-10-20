@@ -4,6 +4,8 @@ import math
 import os
 from typing import List
 
+from dal.cosmosdb_client import CosmosDbClient
+from pharmacy_distributors.common.models import ScrapedProductInfo
 from selenium.common.exceptions import StaleElementReferenceException
 from messaging.messaging import ScraperTaskItem
 from pharmacy_distributors.common.browser_common import BrowserCommon
@@ -14,16 +16,18 @@ from files.file_worker_factory import FileWorkerFactory
 from files.azure_blob_client import AzureBlobClient
 from task_handler.task_update_publisher import TaskUpdatePublisher
 from psa_logger.logger import get_current_logfile_name, get_current_logfile_data
+import concurrent.futures
 
 # Create a logger for this module
 logger = logging.getLogger(__name__)
 
 
 class ProductInfo:
-    def __init__(self, scraper: BrowserCommon, name: str, price: float):
+    def __init__(self, scraper: BrowserCommon, name: str, price: float, is_on_promotion: bool):
         self.scraper = scraper
         self.name = name
         self.price = price
+        self.is_on_promotion = is_on_promotion
 
         if self.scraper is None:
             raise ValueError("Scraper must not be None")
@@ -31,16 +35,19 @@ class ProductInfo:
             raise ValueError("Product name must be a string")
         if not isinstance(price, float):
             raise ValueError("Product price must be a float")
+        if not isinstance(is_on_promotion, bool):
+            raise ValueError("Is on promotion must be a boolean")
 
     # string representation of the object
     def __str__(self):
-        return f"ProductInfo(scraper={self.scraper}, name={self.name}, price={self.price})"
+        return f"ProductInfo(scraper={self.scraper}, name={self.name}, price={self.price}, is_on_promotion={self.is_on_promotion})"
 
     def __dict__(self):
         return {
             "distributor": self.scraper.name,
             "name": self.name,
-            "price": self.price
+            "price": self.price,
+            "is_on_promotion": self.is_on_promotion
         }
 
 
@@ -111,11 +118,10 @@ class TaskHandler:
             logger.error(
                 "TaskHandler: Couldn't initialize the task handler: ", e)
             self.task_update_publisher.publish_error(
-                self.taskItem.account_id,
-                self.taskItem.id,
-                "Couldn't initialize the task handler",
-                str(e),
-                0)
+                taskItem=self.taskItem,
+                message="Couldn't initialize the task handler",
+                detailed_error_message=str(e),
+                progress=0)
             raise e
 
     def handle_task(self):
@@ -128,12 +134,7 @@ class TaskHandler:
 
             self._work_loop()
 
-            self.task_update_publisher.publish_success(
-                account_id=self.taskItem.account_id,
-                task_id=self.taskItem.id,
-                message="Задачата приключи успешно!",
-                progress=100,
-                report=self._generate_report().__dict__())
+            self.task_update_publisher.publish_success(self.taskItem, self._generate_report().__dict__())
         except Exception as e:
             logger.exception(f"TaskHandler: Failed to handle the task: {str(e)}")
             blob_client = AzureBlobClient()
@@ -155,11 +156,10 @@ class TaskHandler:
                 blob_client.upload_blob_to_output_container(screenshotName, screenshotPng[:])
 
             self.task_update_publisher.publish_error(
-                self.taskItem.account_id,
-                self.taskItem.id,
-                "Неуспешно завършване на задачата!",
-                str(e) if str(e).strip() != "" else str(e.__traceback__),
-                0,
+                taskItem=self.taskItem,
+                message="Неуспешно завършване на задачата!",
+                detailed_error_message=str(e) if str(e).strip() != "" else str(e.__traceback__),
+                progress=0,
                 image_urls=image_urls)
             return
 
@@ -183,11 +183,10 @@ class TaskHandler:
         except Exception as e:
             logger.error("TaskHandler: Couldn't open the file: ", e)
             self.task_update_publisher.publish_error(
-                self.taskItem.account_id,
-                self.taskItem.id,
-                "Couldn't open the file: " + self.taskItem.file_name,
-                str(e),
-                0)
+                taskItem=self.taskItem,
+                message="Couldn't open the file: " + self.taskItem.file_name,
+                detailed_error_message=str(e),
+                progress=0)
             raise e
 
         try:
@@ -195,11 +194,10 @@ class TaskHandler:
         except Exception as e:
             logger.error("TaskHandler: Couldn't validate the input file: ", e)
             self.task_update_publisher.publish_error(
-                self.taskItem.account_id,
-                self.taskItem.id,
-                "Couldn't validate the input file: " + self.taskItem.file_name,
-                str(e),
-                0)
+                taskItem=self.taskItem,
+                message="Couldn't validate the input file: " + self.taskItem.file_name,
+                detailed_error_message=str(e),
+                progress=0)
             raise e
 
     def _work_loop(self):
@@ -210,32 +208,46 @@ class TaskHandler:
             except Exception as e:
                 logger.error("TaskHandler: Couldn't get next row: ", e)
                 self.task_update_publisher.publish_error(
-                    self.taskItem.account_id, self.taskItem.id, "Couldn't get next row", str(e), progress_percent)
+                    taskItem=self.taskItem,
+                    message="Couldn't get next row",
+                    detailed_error_message=str(e),
+                    progress=progress_percent)
                 raise e
             if row_info.product_name_variations is None or row_info.product_quantity is None:
                 logger.info(
                     f"TaskHandler: No more rows to process: {row_info}")
                 break
+            try:
+                self._get_custom_product_name_variations(row_info)
+            except Exception as e:
+                logger.error(
+                    "TaskHandler: Couldn't get custom product name variations: ", e)
+                self.task_update_publisher.publish_error(
+                    taskItem=self.taskItem,
+                    message="Неуспешно извличане на вариации на продукт",
+                    detailed_error_message=str(e),
+                    progress=progress_percent)
+                raise e
 
             progress = self.file_worker.get_progress()
             progress_percent = math.floor(
                 progress.current_input_row / progress.total_number_of_rows * 100)
             self.task_update_publisher.publish_progress_update(
-                self.taskItem.account_id,
-                self.taskItem.id,
-                json.dumps(progress.to_json()),
-                progress_percent)
+                taskItem=self.taskItem,
+                message=json.dumps(progress.to_json()),
+                progress=progress_percent)
 
             self.buy_lowest_price_for_product(
-                progress.original_product_name, row_info.product_name_variations, row_info.product_quantity)
+                productName=progress.original_product_name,
+                productSearchNames=row_info.custom_product_name_variations + row_info.product_name_variations,
+                quantity=row_info.product_quantity)
 
-    def buy_lowest_price_for_product(self, productName: str, productSearchNames: list, quantity: int):
+    def buy_lowest_price_for_product(self, productName: str, productSearchNames: List[str], quantity: int):
         logger.info(f"Getting prices for: {productName}")
-        all_product_prices: List[ProductInfo] = self._get_all_prices(
-            productSearchNames)
+        all_product_prices: List[ProductInfo] = self._get_all_prices(productSearchNames)
         best_product: ProductInfo | None = None
         for product in all_product_prices:
-            logger.info(f"Product: {product.name}, Price: {product.price}")
+            logger.info(f"Product ({product.scraper.get_name()}): {product.name}, Price: {product.price}")
             if best_product is None or product.price < best_product.price:
                 best_product = product
             elif product.price == best_product.price:
@@ -250,36 +262,46 @@ class TaskHandler:
         logger.info(
             f"Best product: {best_product.name}, Price: {best_product.price}, added To {best_product.scraper.get_name()}")
         try:
-            if product.scraper.add_product_to_cart(best_product.name, quantity):
+            if best_product.scraper.add_product_to_cart(best_product.name, quantity):
                 self._store_bought_product(
-                    productName, all_product_prices, product.scraper.get_name())
+                    productName, all_product_prices, best_product.scraper.get_name())
             else:
                 logger.error(
                     f"Product found, but couldn't be added to cart: {productName}")
                 self._store_unbought_product(productName, quantity)
         except Exception as e:
-            raise Exception(f"{product.scraper.get_name()}: {str(e)}")
+            raise Exception(f"{best_product.scraper.get_name()}: {str(e)}")
 
-    def _get_all_prices(self, productSearchNames: list) -> List[ProductInfo]:
+    def _get_all_prices(self, productSearchNames: List[str]) -> List[ProductInfo]:
         logger.info(
             f"TaskHandler: Getting all prices for: {productSearchNames}")
         result: List[ProductInfo] = []
-        for scraper in self.scrapers:
+
+        def get_product_info(scraper: BrowserCommon, productSearchNames: List[str]) -> ProductInfo | None:
             try:
-                name, price = scraper.get_product_name_and_price(
-                    productSearchNames)
+                scraped_product_info: ScrapedProductInfo = scraper.get_product_name_and_price(productSearchNames)
             except StaleElementReferenceException:
                 # retry
                 scraper.refresh_page()
                 try:
-                    name, price = scraper.get_product_name_and_price(
-                        productSearchNames)
+                    scraped_product_info: ScrapedProductInfo = scraper.get_product_name_and_price(productSearchNames)
+                except Exception as e:
+                    logger.error("TaskHandler: Couldn't get product name and price: ", e)
+                    return None
+            if scraped_product_info.price != math.inf:
+                return ProductInfo(scraper, scraped_product_info.name, scraped_product_info.price, scraped_product_info.is_on_promotion)
+            return None
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future_to_scraper = {executor.submit(get_product_info, scraper, productSearchNames): scraper for scraper in self.scrapers}
+            for future in concurrent.futures.as_completed(future_to_scraper):
+                try:
+                    product_info = future.result()
+                    if product_info is not None:
+                        result.append(product_info)
                 except Exception as e:
                     logger.error(
-                        "TaskHandler: Couldn't get product name and price: ", e)
-                    continue
-            if price != math.inf:
-                result.append(ProductInfo(scraper, name, price))
+                        f"TaskHandler: Couldn't get product info with futures: {str(e)}")
 
         logger.info(
             f"TaskHandler: All prices: {[(info.scraper.get_name(), info.name, info.price) for info in result]}")
@@ -307,7 +329,8 @@ class TaskHandler:
                     ProductInfo(
                         scraper=product_info.scraper,
                         name=product_info.name,
-                        price=product_info.price
+                        price=product_info.price,
+                        is_on_promotion=product_info.is_on_promotion
                     ) for product_info in bought_product.all_pharmacy_product_infos
                 ],
                 bought_from_distributor=bought_product.bought_from_distributor
@@ -322,3 +345,34 @@ class TaskHandler:
             report.unbought_products.append(unbought_product_dict)
 
         return report
+
+    def _get_custom_product_name_variations(self, row_info: RowInfo):
+        """
+        Fetches custom product name variations from the CosmosDB database
+        """
+        cosmos_db_client = CosmosDbClient()
+        items = cosmos_db_client.read_items(
+            collection_name="product_name_variations",
+            filter={"original_product_name": row_info.original_product_name},
+            projection={"custom_product_name_variations": 1}
+        )
+
+        if not items:
+            # No items found, insert a new document
+            cosmos_db_client.create_item(
+                collection_name="product_name_variations",
+                document={
+                    "original_product_name": row_info.original_product_name,
+                    "generated_product_variations": row_info.product_name_variations,
+                    "custom_product_name_variations": []
+                }
+            )
+            row_info.custom_product_name_variations = []
+        else:
+            # Update row_info's custom_product_variations
+            row_info.custom_product_name_variations = items[0].get("custom_product_name_variations", [])
+            cosmos_db_client.update_item(
+                collection_name="product_name_variations",
+                item_id=items[0].get("id"),
+                document={"generated_product_variations": row_info.product_name_variations}
+            )

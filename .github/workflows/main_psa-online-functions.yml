@@ -22,8 +22,50 @@ env:
   DOCKER_PLATFORM: 'linux/amd64' # set this for Docker build if needed
 
 jobs:
+  check-changed-dirs:
+    runs-on: ubuntu-latest
+    outputs:
+      scraper_should_run: ${{ steps.check_scraper_should_run.outputs.scraper_should_run }}
+      azure_functions_should_run: ${{ steps.check_azure_functions_should_run.outputs.azure_functions_should_run }}    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # Fetch the last 2 commits to ensure we can compare HEAD and HEAD^
+
+      - name: Get list of directories with changes
+        id: get_changed_dirs
+        run: |
+          CHANGED_DIRS=$(git diff --name-only HEAD^ HEAD | xargs -I {} dirname {} | sort | uniq | tr '\n' ';')
+          echo "Changed directories:"
+          echo "$CHANGED_DIRS"
+          echo "changed_dirs=$CHANGED_DIRS" >> $GITHUB_OUTPUT
+      
+      - name: Check if scraper or workflow files changed
+        id: check_scraper_should_run
+        run: |
+          if echo "${{ steps.get_changed_dirs.outputs.changed_dirs }}" | grep -qE 'scraper.*|\.github/workflows.*'; then
+            echo "scraper_should_run=true" >> $GITHUB_OUTPUT
+            echo "scraper_should_run=true"
+          else
+            echo "scraper_should_run=false" >> $GITHUB_OUTPUT
+            echo "scraper_should_run=false"
+          fi
+      
+      - name: Check if Azure Functions files changed
+        id: check_azure_functions_should_run
+        run: |
+          if echo "${{ steps.get_changed_dirs.outputs.changed_dirs }}" | grep -qE 'azure-functions.*|\.github/workflows.*'; then
+            echo "azure_functions_should_run=true" >> $GITHUB_OUTPUT
+            echo "azure_functions_should_run=true"
+          else
+            echo "azure_functions_should_run=false" >> $GITHUB_OUTPUT
+            echo "azure_functions_should_run=false"
+          fi
+  
   build-azure-functions:
-    if: github.event.inputs.force_run_azure_functions_jobs == 'true' || contains(github.event.head_commit.message, 'azure-functions')
+    needs: check-changed-dirs
+    if: github.event.inputs.force_run_azure_functions_jobs == 'true' || needs.check-changed-dirs.outputs.azure_functions_should_run == 'true'
     runs-on: ubuntu-latest
     environment:
       name: 'production'
@@ -44,7 +86,7 @@ jobs:
 
       - name: Zip artifact for deployment
         run: |
-          zip -r release.zip azure-functions -x "*/venv/*" -x "*/.venv/*" -x "*/__pycache__/*" -x "*/local.settings.json" "*/.gitignore"
+          zip -r release.zip azure-functions -x "*/venv/*" -x "*/.venv/*" -x "*/__pycache__/*" -x "*/local.settings.json" "*/.gitignore" "*/node_modules/*"
   
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
@@ -80,7 +122,8 @@ jobs:
           enable-oryx-build: true
 
   build-and-test-scraper:
-    if: github.event.inputs.force_run_aci_jobs == 'true' || contains(github.event.head_commit.message, 'scraper')
+    needs: check-changed-dirs
+    if: github.event.inputs.force_run_aci_jobs == 'true' || needs.check-changed-dirs.outputs.scraper_should_run == 'true'
     runs-on: ubuntu-latest
     environment:
       name: 'production'
@@ -89,7 +132,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Python version
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
@@ -203,11 +246,11 @@ jobs:
           RESOURCE_GROUP="psa"
           CONTAINER_GROUP_NAME="scraper-container"
           CONTAINER_NAME="scraper-container"
-          KEY_VAULT_NAME="kv-psa-production"
+          KEY_VAULT_NAME="psa-production-kvv"
 
           AZURE_SERVICE_BUS_CONNECTION_STRING=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name azure-service-bus-connection-string --query value -o tsv)
           AZURE_BLOB_STORAGE_CONNECTION_STRING=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name azure-blob-storage-connection-string --query value -o tsv)
-          AZURE_COSMOS_DB_CONNECTION_STRING=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name azure-cosmos-db-connection-string --query value -o tsv)
+          AZURE_COSMOS_DB_CONNECTION_STRING=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name azure-cosmosdb-connection-string --query value -o tsv)
           STING_CONFIG=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name sting-config --query value -o tsv)
           PHOENIX_CONFIG=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name phoenix-config --query value -o tsv)
           
