@@ -82,11 +82,10 @@ class FileWorker:
         pattern = re.compile("|".join(rep.keys()))
         productName_xWithoutSpaces = pattern.sub(lambda m: rep[re.escape(m.group(0))], productName_xWithSpaces)
 
-        productName_withoutX = productName_xWithoutSpaces.replace("x", "").replace("х", "")
+        # remove x from the product name but only if it is not part of a word like "хапче"
+        productName_withoutX = re.sub(r"[xх](?=\s|$)", "", productName_xWithSpaces)
 
-        productName_withoutTabletki = productName_xWithSpaces.replace("x", "")\
-            .replace("х", "")\
-            .replace("табл", "")\
+        productName_withoutTabletki = productName_withoutX.replace("табл", "")\
             .replace("таб", "")\
             .replace("тбл", "")\
             .replace("тб ", "")
