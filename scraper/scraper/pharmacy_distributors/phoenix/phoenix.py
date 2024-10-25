@@ -49,6 +49,7 @@ class PhoenixPharma(BrowserCommon):
                                 + "starts-with(@name, 'textfield')]"
         self.SEARCH_BUTTON_CSS_SELECTOR = "span.fa-search"
         self.PRODUCT_PLUS_BUTTON_XPATH = "//span[text()='Добави']/ancestor::*/div[contains(@role,'grid')]//span[text()='+']"
+        self.ROW_WITH_EXPIRY_DATE_XPATH = "//div[contains(@class, 'x-grid-cell-inner') and text() = 'Срок на годност']"
 
         self.lastSearchWasEmpty = True
 
@@ -113,17 +114,18 @@ class PhoenixPharma(BrowserCommon):
             return None
 
         number_of_results = len(self.browser.find_elements(By.XPATH, self.PRODUCT_PLUS_BUTTON_XPATH))
-        logger.info("PhoenixPharma: number_of_results=" + str(number_of_results))
-        if number_of_results == 0:
-            logger.error("PhoenixPharma: Search result is empty...")
-            return None
-        if number_of_results > 1:
-            self.lastSearchWasEmpty = False
-            logger.error("PhoenixPharma: Too many results were found with the search. For now, we parse this as an invalid search result")
-            return None
+        self.lastSearchWasEmpty = number_of_results == 0
+        # logger.info("PhoenixPharma: number_of_results=" + str(number_of_results))
+        # if number_of_results == 0:
+        #     logger.error("PhoenixPharma: Search result is empty...")
+        #     return None
+        # if number_of_results > 1:
+        #     self.lastSearchWasEmpty = False
+        #     logger.error("PhoenixPharma: Too many results were found with the search. For now, we parse this as an invalid search result")
+        #     return None
 
-        logger.info("PhoenixPharma:_search_for_product(): Found product " + product_name)
-        self.lastSearchWasEmpty = False
+        # logger.info("PhoenixPharma:_search_for_product(): Found product " + product_name)
+        # self.lastSearchWasEmpty = False
         return element
 
     def _get_price_header_position(self):
@@ -177,19 +179,22 @@ class PhoenixPharma(BrowserCommon):
                 return ScrapedProductInfo(
                     name="",
                     price=math.inf,
-                    is_on_promotion=False
+                    is_on_promotion=False,
+                    alternative_names=None
                 )
 
             return ScrapedProductInfo(
                 name=self._get_product_name(),
                 price=self._get_product_price(price_header_position),
-                is_on_promotion=False
+                is_on_promotion=False,
+                alternative_names=None
             )
 
         return ScrapedProductInfo(
             name="",
             price=math.inf,
-            is_on_promotion=False
+            is_on_promotion=False,
+            alternative_names=None
         )
 
     def add_product_to_cart(self, quantity):

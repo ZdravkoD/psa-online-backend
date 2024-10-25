@@ -1,13 +1,14 @@
 import logging
 import math
 import time
-from typing import Tuple
+from typing import Optional, Tuple
 
 from pharmacy_distributors.common.models import ScrapedProductInfo
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.remote.webelement import WebElement
 
 from pharmacy_distributors.common.browser_common import BrowserCommon
 from configuration.common import DistributorConfig
@@ -145,7 +146,7 @@ class StingPharma(BrowserCommon):
 
         return star_element is not None
 
-    def _search_for_product(self, product_name: str):
+    def _search_for_product(self, product_name: str) -> Tuple[Optional[WebElement], Optional[list[str]]]:
         logger.info(
             "StingPharma:_search_for_product(): product_name:" + product_name)
         self._clearSearchResult()
@@ -176,13 +177,13 @@ class StingPharma(BrowserCommon):
 
         SELECTOR_ADD_QUANTITY = "//div[contains(text(), 'Няма открити артикули.')]|//input[starts-with(@title, 'Добави количеството')]"
         try:
-            element = WebDriverWait(self.browser, 5)\
+            element: WebElement = WebDriverWait(self.browser, 5)\
                 .until(EC.element_to_be_clickable((By.XPATH, SELECTOR_ADD_QUANTITY)))
         except Exception as e:
             logger.error(
                 "StingPharma: Something went wrong with the search result. Didn't get result in less than 5 seconds")
             logger.error(e)
-            return None
+            return None, None
 
         number_of_results = len(self.browser.find_elements(
             By.XPATH, SELECTOR_ADD_QUANTITY))
@@ -190,15 +191,16 @@ class StingPharma(BrowserCommon):
             self.lastSearchWasEmpty = False
             logger.error(
                 "StingPharma: Too many results were found with the search. For now, we parse this as an invalid search result")
-            return None
+            # TODO: Do not return none for alternative names
+            return None, None
 
         if element.tag_name != 'input':
-            return None
+            return None, None
 
         logger.info(
             "StingPharma:_search_for_product(): Found product " + product_name)
         self.lastSearchWasEmpty = False
-        return element
+        return element, None
 
     def _clearSearchResult(self):
         # no need to clear the search if it's already cleared
@@ -241,10 +243,13 @@ class StingPharma(BrowserCommon):
             self.refresh_page()
 
     def get_product_name_and_price(self, productSearchNames: list) -> ScrapedProductInfo:
+        all_alternative_names = []
         for productName in productSearchNames:
             logger.info(
                 "StingPharma.get_product_name_and_price(): Searching for product: '" + productName + "'...")
-            element = self._search_for_product(productName)
+            element, alternative_names = self._search_for_product(productName)
+            if alternative_names is not None:
+                all_alternative_names.append(alternative_names)
             if element is None:
                 continue
 
@@ -256,20 +261,23 @@ class StingPharma(BrowserCommon):
                 return ScrapedProductInfo(
                     name="",
                     price=math.inf,
-                    is_on_promotion=False
+                    is_on_promotion=False,
+                    alternative_names=all_alternative_names if len(all_alternative_names) > 0 else None
                 )
             name_header_position = self._get_name_header_position()
 
             return ScrapedProductInfo(
                 name=self._get_product_name(name_header_position),
                 price=self._get_product_price(price_header_position),
-                is_on_promotion=self._get_is_product_in_promotion()
+                is_on_promotion=self._get_is_product_in_promotion(),
+                alternative_names=all_alternative_names if len(all_alternative_names) > 0 else None
             )
 
         return ScrapedProductInfo(
             name="",
             price=math.inf,
-            is_on_promotion=False
+            is_on_promotion=False,
+            alternative_names=all_alternative_names if len(all_alternative_names) > 0 else None
         )
 
     def add_product_to_cart(self, __product_name: str, quantity: int):

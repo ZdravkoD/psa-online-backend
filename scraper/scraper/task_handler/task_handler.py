@@ -2,7 +2,7 @@ import json
 import logging
 import math
 import os
-from typing import List
+from typing import List, Optional
 
 from dal.cosmosdb_client import CosmosDbClient
 from pharmacy_distributors.common.models import ScrapedProductInfo
@@ -23,31 +23,38 @@ logger = logging.getLogger(__name__)
 
 
 class ProductInfo:
-    def __init__(self, scraper: BrowserCommon, name: str, price: float, is_on_promotion: bool):
+    def __init__(self, scraper: BrowserCommon, name: str, price: Optional[float], is_on_promotion: bool, alternative_names: List[str]):
         self.scraper = scraper
         self.name = name
         self.price = price
         self.is_on_promotion = is_on_promotion
+        self.alternative_names = alternative_names if alternative_names is not None else []
 
         if self.scraper is None:
             raise ValueError("Scraper must not be None")
         if not isinstance(name, str):
             raise ValueError("Product name must be a string")
-        if not isinstance(price, float):
-            raise ValueError("Product price must be a float")
+        if not isinstance(price, float) and price is not None:
+            raise ValueError("Product price must be a float or None")
         if not isinstance(is_on_promotion, bool):
             raise ValueError("Is on promotion must be a boolean")
+        if not isinstance(alternative_names, List) and alternative_names is not None:
+            raise ValueError("Alternative names must be a list or None")
+
+    def get_price(self) -> float:
+        return self.price if self.price is not None else math.inf
 
     # string representation of the object
     def __str__(self):
-        return f"ProductInfo(scraper={self.scraper}, name={self.name}, price={self.price}, is_on_promotion={self.is_on_promotion})"
+        return f"ProductInfo(scraper={self.scraper}, name={self.name}, price={self.price}, is_on_promotion={self.is_on_promotion}, alternative_names={self.alternative_names})"
 
     def __dict__(self):
         return {
             "distributor": self.scraper.name,
             "name": self.name,
             "price": self.price,
-            "is_on_promotion": self.is_on_promotion
+            "is_on_promotion": self.is_on_promotion,
+            "alternative_names": self.alternative_names
         }
 
 
@@ -76,9 +83,10 @@ class BoughtProductInfo:
 
 
 class UnboughtProductInfo:
-    def __init__(self, product_name: str, quantity: int):
+    def __init__(self, product_name: str, quantity: int, alternative_names: List[str]):
         self.product_name = product_name
         self.quantity = quantity
+        self.alternative_names = alternative_names
 
         if not isinstance(product_name, str):
             raise ValueError("Product name must be a string")
@@ -88,7 +96,8 @@ class UnboughtProductInfo:
     def __dict__(self):
         return {
             "product_name": self.product_name,
-            "quantity": self.quantity
+            "quantity": self.quantity,
+            "alternative_names": self.alternative_names
         }
 
 
@@ -247,16 +256,17 @@ class TaskHandler:
         all_product_prices: List[ProductInfo] = self._get_all_prices(productSearchNames)
         best_product: ProductInfo | None = None
         for product in all_product_prices:
-            logger.info(f"Product ({product.scraper.get_name()}): {product.name}, Price: {product.price}")
-            if best_product is None or product.price < best_product.price:
+            logger.info(f"Product ({product.scraper.get_name()}): {product.name}, Price: {product.price}, Alternative names: {product.alternative_names}")
+            if best_product is None or product.get_price() < best_product.get_price():
                 best_product = product
             elif product.price == best_product.price:
                 if product.scraper.get_priority() < best_product.scraper.get_priority():
                     best_product = product
 
-        if best_product is None:
+        if best_product is None or best_product.price == math.inf:
             logger.error(f"Couldn't find product: {productName}")
-            self._store_unbought_product(productName, quantity)
+            alternative_names = [name for product in all_product_prices for name in product.alternative_names]
+            self._store_unbought_product(productName, quantity, alternative_names)
             return
 
         logger.info(
@@ -268,7 +278,7 @@ class TaskHandler:
             else:
                 logger.error(
                     f"Product found, but couldn't be added to cart: {productName}")
-                self._store_unbought_product(productName, quantity)
+                self._store_unbought_product(productName, quantity, alternative_names=[])
         except Exception as e:
             raise Exception(f"{best_product.scraper.get_name()}: {str(e)}")
 
@@ -288,8 +298,13 @@ class TaskHandler:
                 except Exception as e:
                     logger.error("TaskHandler: Couldn't get product name and price: ", e)
                     return None
-            if scraped_product_info.price != math.inf:
-                return ProductInfo(scraper, scraped_product_info.name, scraped_product_info.price, scraped_product_info.is_on_promotion)
+            if scraped_product_info.price != math.inf or len(scraped_product_info.alternative_names) > 0:
+                return ProductInfo(
+                    scraper,
+                    scraped_product_info.name,
+                    scraped_product_info.price,
+                    scraped_product_info.is_on_promotion,
+                    alternative_names=scraped_product_info.alternative_names)
             return None
 
         with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -304,7 +319,7 @@ class TaskHandler:
                         f"TaskHandler: Couldn't get product info with futures: {str(e)}")
 
         logger.info(
-            f"TaskHandler: All prices: {[(info.scraper.get_name(), info.name, info.price) for info in result]}")
+            f"TaskHandler: All prices: {[(info.scraper.get_name(), info.name, info.price, info.alternative_names) for info in result]}")
         return result
 
     def _store_bought_product(self, original_product_name: str, all_pharmacy_product_infos: List[ProductInfo], bought_from_distributor: str):
@@ -312,8 +327,8 @@ class TaskHandler:
             original_product_name, all_pharmacy_product_infos, bought_from_distributor)
         self.bought_products.append(bought_product)
 
-    def _store_unbought_product(self, product_name: str, quantity: int):
-        unbought_product = UnboughtProductInfo(product_name, quantity)
+    def _store_unbought_product(self, product_name: str, quantity: int, alternative_names: List[str]):
+        unbought_product = UnboughtProductInfo(product_name, quantity, alternative_names)
         self.unbought_products.append(unbought_product)
 
     def _generate_report(self) -> TaskReport:
@@ -329,8 +344,9 @@ class TaskHandler:
                     ProductInfo(
                         scraper=product_info.scraper,
                         name=product_info.name,
-                        price=product_info.price,
-                        is_on_promotion=product_info.is_on_promotion
+                        price=product_info.price if product_info.price != math.inf else None,
+                        is_on_promotion=product_info.is_on_promotion,
+                        alternative_names=product_info.alternative_names
                     ) for product_info in bought_product.all_pharmacy_product_infos
                 ],
                 bought_from_distributor=bought_product.bought_from_distributor
@@ -340,7 +356,8 @@ class TaskHandler:
         for unbought_product in self.unbought_products:
             unbought_product_dict = UnboughtProductInfo(
                 product_name=unbought_product.product_name,
-                quantity=unbought_product.quantity
+                quantity=unbought_product.quantity,
+                alternative_names=unbought_product.alternative_names
             )
             report.unbought_products.append(unbought_product_dict)
 

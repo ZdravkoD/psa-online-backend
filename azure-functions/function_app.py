@@ -292,6 +292,7 @@ def _tasks_parse_params(req: func.HttpRequest) -> Tuple[Optional[dict], Optional
 
     # Parse projection param
     projection_param = req.params.get("projection", None)
+    print("projection_param", projection_param)
     projection_dict = parse_json_param(projection_param, "projection")
 
     # Parse sort param
@@ -430,9 +431,9 @@ def get_input_file(req: func.HttpRequest) -> func.HttpResponse:
     })
 
 
-@app.route(route="product-names", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
+@app.route(route="products", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
 def get_product_names(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info('Python HTTP trigger function processed a request to get product names.')
+    logging.info('Python HTTP trigger function processed a request to get products')
 
     try:
         filter, projection, sort, skip, limit = _product_names_parse_params(req=req)
@@ -482,7 +483,30 @@ def _product_names_parse_params(req: func.HttpRequest) -> Tuple[Optional[dict], 
     return filter_dict, projection_dict, sort_dict, skip, limit
 
 
-@app.route(route="product-names", auth_level=func.AuthLevel.ANONYMOUS, methods=["PATCH"])
+@app.route(route="product/{id}", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
+def get_product(req: func.HttpRequest) -> func.HttpResponse:
+    logging.info('Python HTTP trigger function processed a request to get a product name.')
+
+    product_id = req.route_params.get('id')
+    if not product_id:
+        return func.HttpResponse(
+            "Please provide the product ID in the URI.",
+            status_code=400
+        )
+
+    try:
+        product = cosmosDbClient.read_item_by_id("product_name_variations", product_id)
+    except Exception as e:
+        logging.error(f"Failed to get product name: {e}")
+        return func.HttpResponse(
+            "Failed to get product name.",
+            status_code=500
+        )
+
+    return func.HttpResponse(body=json.dumps(product, cls=CustomJSONEncoder), status_code=200, mimetype="application/json")
+
+
+@app.route(route="product/{id}", auth_level=func.AuthLevel.ANONYMOUS, methods=["PATCH"])
 def update_product_name(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request to update a product name.')
 
@@ -494,7 +518,7 @@ def update_product_name(req: func.HttpRequest) -> func.HttpResponse:
             status_code=400
         )
 
-    product_id = req_body.get("id")
+    product_id = req.route_params.get('id')
     if not product_id:
         return func.HttpResponse(
             "Please provide the product ID in the request body.",
