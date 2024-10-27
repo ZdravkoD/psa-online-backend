@@ -56,7 +56,7 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         if number_of_results > 1:
             self.lastSearchWasEmpty = False
             alternative_names = []
-            filtered_rows = [row for row in json_root["dataset"]["row"] if row.get("ExpiryDate")]
+            filtered_rows = [row for row in json_root["dataset"]["row"] if row.get("ExpiryDate") and row.get("isWebSaleProhibition") == '0']
             if len(filtered_rows) == 0:
                 logger.error("PhoenixPharma: Found multiple products with search, but none of them have an expiry date, so we're skipping these products...")
                 return None, None, None
@@ -75,6 +75,11 @@ class PhoenixPharmaOptimized(PhoenixPharma):
             self.lastSearchWasEmpty = False
             logger.error("PhoenixPharma: Found product with search, but the expiry date was empty, so we're skipping this product...")
             # TODO: Do not return none for alternative names
+            return None, None, None
+
+        if json_root['dataset']['row']['isWebSaleProhibition'] != '0':
+            logger.error(
+                f"PhoenixPharma: Found product with search, but the product is not available for web sale, so we're skipping this product...: isWebSaleProhibition={json_root['dataset']['row']['isWebSaleProhibition']}")
             return None, None, None
 
         result_product_name = json_root["dataset"]["row"]["CyrName"]

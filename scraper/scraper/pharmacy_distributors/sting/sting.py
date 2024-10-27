@@ -189,10 +189,24 @@ class StingPharma(BrowserCommon):
             By.XPATH, SELECTOR_ADD_QUANTITY))
         if number_of_results > 1:
             self.lastSearchWasEmpty = False
-            logger.error(
-                "StingPharma: Too many results were found with the search. For now, we parse this as an invalid search result")
-            # TODO: Do not return none for alternative names
-            return None, None
+            logger.info(
+                "StingPharma: Too many results were found with the search. For now, we parse this as an invalid search result, but we add the alternative names to the result")
+
+            # select all rows with xpath
+            # then select the first td element in each row
+            # then get the text of the element
+            # then strip the text
+            # then add the text to the list
+            try:
+                alternative_names = [element.text.strip() for element in self.browser.find_elements(
+                    By.XPATH, "//table[contains(@id, 'RadGridResult')]//tbody//tr[contains(@class, 'rgRow') or contains(@class, 'rgAltRow')]/td[not(@style='display:none;')][1]")]
+            except Exception as e:
+                logger.error(
+                    "StingPharma: Couldn't get alternative names from the search result")
+                logger.error(e)
+                return None, None
+
+            return None, alternative_names
 
         if element.tag_name != 'input':
             return None, None
@@ -249,7 +263,7 @@ class StingPharma(BrowserCommon):
                 "StingPharma.get_product_name_and_price(): Searching for product: '" + productName + "'...")
             element, alternative_names = self._search_for_product(productName)
             if alternative_names is not None:
-                all_alternative_names.append(alternative_names)
+                all_alternative_names.extend(alternative_names)
             if element is None:
                 continue
 
