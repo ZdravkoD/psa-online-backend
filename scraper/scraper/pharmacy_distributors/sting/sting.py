@@ -96,7 +96,8 @@ class StingPharma(BrowserCommon):
 
         position = 1
         for table_header in table_headers:
-            if table_header.get_attribute('innerHTML') == 'Цена с ТО':
+            inner_html = table_header.get_attribute('textContent')
+            if inner_html is not None and inner_html.strip() == 'Цена с ТО Лв.':
                 return position
             position += 1
 
