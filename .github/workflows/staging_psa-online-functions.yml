@@ -278,6 +278,7 @@ jobs:
             az container create \
               --resource-group psa \
               --name scraper-container \
+              --os-type Linux \
               --image ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} \
               --environment-variables \
                 AZURE_SERVICE_BUS_CONNECTION_STRING=$AZURE_SERVICE_BUS_CONNECTION_STRING \
