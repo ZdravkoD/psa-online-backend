@@ -170,13 +170,6 @@ jobs:
       - name: Login to Azure
         uses: azure/login@v1
         with:
-          # az ad sp show --id 45f08d0f-5389-4fef-9c35-78f119d355ac
-          # {
-          #   "clientSecret":  "******",
-          #   "subscriptionId":  "******",
-          #   "tenantId":  "******",
-          #   "clientId":  "******"
-          # }
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Log in to ACR
@@ -260,62 +253,40 @@ jobs:
           echo "AZURE_COSMOS_DB_CONNECTION_STRING=${AZURE_COSMOS_DB_CONNECTION_STRING}" >> $GITHUB_ENV
           echo "STING_CONFIG=${STING_CONFIG}" >> $GITHUB_ENV
           echo "PHOENIX_CONFIG=${PHOENIX_CONFIG}" >> $GITHUB_ENV
-      - name: Debug List scraper directory
-        run: ls -R scraper
+
       - name: Deploy new Azure Container Instance
         uses: nick-fields/retry@v3.0.0
         with:
           max_attempts: 3
-          timeout_minutes: 10
+          timeout_minutes: 5
           retry_on: error
           command: |
-            # Deploy the container group declaratively via an ARM template so the
-            # imageRegistryCredentials can reference the user-assigned identity.
-            # Assumptions:
-            # - The user-assigned identity resource already exists at the CONTAINER_IDENTITY value.
-            # - The container image does not expose an HTTP health endpoint; we use an exec-based probe to verify a running process.
-            #   If your image exposes an HTTP /health endpoint, replace the exec probes with httpGet probes and set the container port.
-
             cd scraper
             IMAGE_NAME=${{ secrets.ACR_LOGIN_SERVER }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
-            CONTAINER_IDENTITY="/subscriptions/7b4dbc02-6b4b-42bf-90b2-92d8ed681e87/resourceGroups/psa/providers/Microsoft.ManagedIdentity/userAssignedIdentities/scraper-identity"
+            CONTAINER_IDENTITY=/subscriptions/7b4dbc02-6b4b-42bf-90b2-92d8ed681e87/resourcegroups/psa/providers/Microsoft.ManagedIdentity/userAssignedIdentities/scraper-identity
+            ESCAPED_STING_CONFIG=$(echo '${{ env.STING_CONFIG }}' | jq -sRr @json)
+            ESCAPED_PHOENIX_CONFIG=$(echo '${{ env.PHOENIX_CONFIG }}' | jq -sRr @json)          
 
-            # Properly escape JSON strings for environment variables
-            ESCAPED_STING_CONFIG=$(echo "$STING_CONFIG" | jq -sRr @json)
-            ESCAPED_PHOENIX_CONFIG=$(echo "$PHOENIX_CONFIG" | jq -sRr @json)
-
-            # Ensure the user-assigned managed identity has AcrPull on the ACR (idempotent)
-            PRINCIPAL_ID=$(az identity show --ids "$CONTAINER_IDENTITY" --query principalId -o tsv)
-            ACR_NAME=$(echo "${{ secrets.ACR_LOGIN_SERVER }}" | cut -d. -f1)
-            ACR_ID=$(az acr show --name "$ACR_NAME" --resource-group psa --query id -o tsv)
-            if [ -z "$PRINCIPAL_ID" ] || [ -z "$ACR_ID" ]; then
-              echo "Skipping role assignment: missing principalId or ACR id"
-            else
-              existing=$(az role assignment list --scope "$ACR_ID" --assignee "$PRINCIPAL_ID" --query "length(@)" -o tsv)
-              if [ "$existing" -eq 0 ]; then
-                echo "Creating AcrPull role assignment for principal $PRINCIPAL_ID on $ACR_ID"
-                az role assignment create --assignee "$PRINCIPAL_ID" --role AcrPull --scope "$ACR_ID" || true
-              else
-                echo "AcrPull role assignment already exists"
-              fi
-            fi
-
-            # Deploy the template from the repository
-            az deployment group create \
+            az container create \
               --resource-group psa \
-              --template-file aci-template.json \
-              --parameters \
-                containerGroupName="scraper-container" \
-                location="francecentral" \
-                imageName="$IMAGE_NAME" \
-                containerIdentityId="$CONTAINER_IDENTITY" \
-                registryServer="${{ secrets.ACR_LOGIN_SERVER }}" \
-                alerterEmail="${{ secrets.ALERTER_EMAIL }}" \
-                envStingConfig="$ESCAPED_STING_CONFIG" \
-                envPhoenixConfig="$ESCAPED_PHOENIX_CONFIG" \
-                envServiceBusConn="$AZURE_SERVICE_BUS_CONNECTION_STRING" \
-                envBlobConn="$AZURE_BLOB_STORAGE_CONNECTION_STRING" \
-                envCosmosConn="$AZURE_COSMOS_DB_CONNECTION_STRING"
+              --name scraper-container \
+              --os-type Linux \
+              --image ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} \
+              --environment-variables \
+                AZURE_SERVICE_BUS_CONNECTION_STRING=$AZURE_SERVICE_BUS_CONNECTION_STRING \
+                AZURE_SERVICE_BUS_QUEUE_NAME="task-queue" \
+                AZURE_SERVICE_BUS_TASK_UPDATES_QUEUE_NAME="task-updates" \
+                AZURE_BLOB_STORAGE_CONNECTION_STRING=$AZURE_BLOB_STORAGE_CONNECTION_STRING \
+                AZURE_BLOB_STORAGE_INPUT_FILES_CONTAINER_NAME="input-files" \
+                AZURE_BLOB_STORAGE_OUTPUT_FILES_CONTAINER_NAME="output-files" \
+                AZURE_BLOB_STORAGE_LOG_FILES_CONTAINER_NAME="log-files" \
+                AZURE_COSMOS_DB_CONNECTION_STRING=$AZURE_COSMOS_DB_CONNECTION_STRING \
+                STING_CONFIG=$ESCAPED_STING_CONFIG \
+                PHOENIX_CONFIG=$ESCAPED_PHOENIX_CONFIG \
+              --cpu 1 --memory 1.5 \
+              --registry-username ${{ secrets.AZURE_CLIENT_ID }} \
+              --registry-password ${{ secrets.AZURE_CLIENT_SECRET }} \
+              --assign-identity $CONTAINER_IDENTITY
 
 # Context for resetting Azure Service Principal credentials and updating GitHub secrets
 # Commands to execute:
