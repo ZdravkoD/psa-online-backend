@@ -260,7 +260,8 @@ jobs:
           echo "AZURE_COSMOS_DB_CONNECTION_STRING=${AZURE_COSMOS_DB_CONNECTION_STRING}" >> $GITHUB_ENV
           echo "STING_CONFIG=${STING_CONFIG}" >> $GITHUB_ENV
           echo "PHOENIX_CONFIG=${PHOENIX_CONFIG}" >> $GITHUB_ENV
-
+      - name: Debug List scraper directory
+        run: ls -R scraper
       - name: Deploy new Azure Container Instance
         uses: nick-fields/retry@v3.0.0
         with:
@@ -315,4 +316,23 @@ jobs:
                 envServiceBusConn="$AZURE_SERVICE_BUS_CONNECTION_STRING" \
                 envBlobConn="$AZURE_BLOB_STORAGE_CONNECTION_STRING" \
                 envCosmosConn="$AZURE_COSMOS_DB_CONNECTION_STRING"
-        
+
+# Context for resetting Azure Service Principal credentials and updating GitHub secrets
+# Commands to execute:
+# 1. az ad sp credential reset --id 45f08d0f-5389-4fef-9c35-78f119d355ac
+#    - Output mapping:
+#      - appId -> AZURE_CLIENT_ID
+#      - password -> AZURE_CLIENT_SECRET
+#      - tenant -> AZURE_TENANT_ID
+# 2. az account show --query id -o tsv
+#    - Output:
+#      - subscriptionId -> AZURE_SUBSCRIPTION_ID
+#
+# JSON structure for GitHub secrets:
+# {
+#   "AZURE_CLIENT_ID": "<appId>",
+#   "AZURE_CLIENT_SECRET": "<password>",
+#   "AZURE_TENANT_ID": "<tenant>",
+#   "AZURE_SUBSCRIPTION_ID": "<subscriptionId>"
+# }
+
