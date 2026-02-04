@@ -303,7 +303,7 @@ jobs:
             # Deploy the template from the repository
             az deployment group create \
               --resource-group psa \
-              --template-file scraper/aci-template.json \
+              --template-file aci-template.json \
               --parameters \
                 containerGroupName="scraper-container" \
                 location="francecentral" \
