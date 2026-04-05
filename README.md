@@ -36,6 +36,25 @@ cd azure-functions
 func start
 ```
 
+## Read-only smoke tests
+
+This repo includes a read-only smoke test for the deployed Azure Functions app.
+It only calls `GET` endpoints and intentionally avoids any endpoint that creates
+or updates data.
+
+```bash
+cd azure-functions
+make smoke-test BASE_URL=https://psa-online-functions.azurewebsites.net/api
+```
+
+The script currently checks:
+
+- `GET /pharmacies`
+- `GET /distributors`
+- `GET /products?limit=1`
+- `GET /task/not-a-valid-object-id` expecting `400`
+- `GET /product/not-a-valid-object-id` expecting `400`
+
 
 ## Infra Setup
 
