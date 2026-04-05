@@ -87,5 +87,22 @@ class TaskHandlerInitTests(unittest.TestCase):
                 task_handler_module.TaskHandler(fake_task)
 
 
+class TaskHandlerErrorDetailsTests(unittest.TestCase):
+    def test_build_task_error_details_includes_scraper_context(self):
+        scraper = mock.Mock()
+        scraper.format_debug_context.return_value = "\n".join([
+            "Scraper: Sting",
+            "Current action: Selecting Sting payment channel",
+            "Page title: Избор на канал",
+            "Current URL: http://example.test/page",
+        ])
+
+        result = task_handler_module.build_task_error_details(RuntimeError("timeout from aborted by navigation"), [scraper])
+
+        self.assertIn("Message: timeout from aborted by navigation", result)
+        self.assertIn("Current action: Selecting Sting payment channel", result)
+        self.assertIn("Current URL: http://example.test/page", result)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -42,6 +42,7 @@ class PhoenixPharmaOptimized(PhoenixPharma):
     # returns name and price
     # order_type + order_partner_id => These parameters are allowing us to get the discount price. All of them are hardcoded
     def _search_for_product_optimized(self, product_name: str) -> Tuple[Optional[str], Optional[float], Optional[list[str]]]:
+        self.remember_action(f"Searching Phoenix for product '{product_name}' via optimized endpoint")
         logger.info("PhoenixPharma._search_for_product_optimized(): Searching for product: '" + product_name + "'...")
         json_root = self._get_json_result_of_search(product_name)
         if json_root is None:
@@ -156,6 +157,7 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         return None
 
     def add_product_to_cart(self, product_name: str, quantity):
+        self.remember_action(f"Adding product '{product_name}' to Phoenix cart with quantity {quantity}")
         logger.info("PhoenixPharmaOptimized: Adding product to cart: " + product_name + ", quantity: " + str(quantity))
         self._search_for_product(product_name)
 

@@ -23,6 +23,8 @@ class BrowserCommon():
         self.name = name
         self.priority = priority
         self.temporary_screenshotts: Deque[bytes] = deque(maxlen=3)
+        self.recent_actions: Deque[str] = deque(maxlen=8)
+        self.current_action = "browser initialized"
 
     def initBrowser(self):
         # Raises WebDriverException if the driver is not available
@@ -58,6 +60,53 @@ class BrowserCommon():
         """
         screenshot = self.browser.get_screenshot_as_png()
         self.temporary_screenshotts.appendleft(screenshot)
+
+    def remember_action(self, action: str):
+        self.current_action = action
+        self.recent_actions.appendleft(action)
+        logger.info("%s: %s", self.__class__.__name__, action)
+
+    def _safe_get_current_url(self) -> str:
+        try:
+            return self.browser.current_url
+        except Exception as exc:
+            return f"<unavailable: {exc}>"
+
+    def _safe_get_title(self) -> str:
+        try:
+            return self.browser.title
+        except Exception as exc:
+            return f"<unavailable: {exc}>"
+
+    def _safe_get_window_handles(self) -> str:
+        try:
+            return str(len(self.browser.window_handles))
+        except Exception as exc:
+            return f"<unavailable: {exc}>"
+
+    def get_debug_context(self) -> dict:
+        return {
+            "scraper": self.get_name(),
+            "current_action": self.current_action,
+            "recent_actions": list(self.recent_actions),
+            "page_title": self._safe_get_title(),
+            "current_url": self._safe_get_current_url(),
+            "window_handles": self._safe_get_window_handles(),
+        }
+
+    def format_debug_context(self) -> str:
+        context = self.get_debug_context()
+        lines = [
+            f"Scraper: {context['scraper']}",
+            f"Current action: {context['current_action']}",
+            f"Page title: {context['page_title']}",
+            f"Current URL: {context['current_url']}",
+            f"Window handles: {context['window_handles']}",
+        ]
+        if context["recent_actions"]:
+            lines.append("Recent actions:")
+            lines.extend(f"- {action}" for action in context["recent_actions"])
+        return "\n".join(lines)
 
     def get_temporary_screenshots(self) -> List[Tuple[bytes, str]]:
         screenshots_with_names = []

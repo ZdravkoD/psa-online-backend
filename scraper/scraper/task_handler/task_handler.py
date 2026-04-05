@@ -22,6 +22,14 @@ import concurrent.futures
 logger = logging.getLogger(__name__)
 
 
+def build_task_error_details(error: Exception, scrapers: List[BrowserCommon]) -> str:
+    details = [f"Message: {str(error) if str(error).strip() != '' else repr(error)}"]
+    for scraper in scrapers:
+        details.append("")
+        details.append(scraper.format_debug_context())
+    return "\n".join(details)
+
+
 class ProductInfo:
     def __init__(self, scraper: BrowserCommon, name: str, price: Optional[float], is_on_promotion: bool, alternative_names: List[str]):
         self.scraper = scraper
@@ -169,7 +177,7 @@ class TaskHandler:
             self.task_update_publisher.publish_error(
                 taskItem=self.taskItem,
                 message="Неуспешно завършване на задачата!",
-                detailed_error_message=str(e) if str(e).strip() != "" else str(e.__traceback__),
+                detailed_error_message=build_task_error_details(e, self.scrapers),
                 progress=0,
                 image_urls=image_urls)
             return

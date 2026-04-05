@@ -44,15 +44,19 @@ class StingPharma(BrowserCommon):
         self.lastSearchWasEmpty = True
 
     def login(self):
+        self.remember_action("Opening Sting login page")
         self.browser.get(self.LOGIN_PAGE)
+        self.remember_action(f"Entering Sting username for pharmacy {self.user}")
         self.browser.find_element(
             By.CSS_SELECTOR, "input[id='Login1_UserName']").send_keys(self.user)
+        self.remember_action("Submitting Sting login form")
         self.browser.find_element(
             By.CSS_SELECTOR, "input[id='Login1_Password']").send_keys(self.password)
         self.browser.find_element(
             By.CSS_SELECTOR, "input[id='Login1_Password']").send_keys(Keys.RETURN)
 
     def clearCart(self):
+        self.remember_action("Clearing Sting cart")
         self.store_temporary_screenshot()
         try:
             WebDriverWait(self.browser, 2).until(
@@ -68,25 +72,31 @@ class StingPharma(BrowserCommon):
 
     def prepare_for_order(self):
         self.store_temporary_screenshot()
+        self.remember_action("Navigating to Sting channel selection")
         # go to Search page
         self.browser.find_element(
             By.CSS_SELECTOR, "li a[href='Users/CartChooseChannel.aspx']").click()
         self.store_temporary_screenshot()
+        self.remember_action("Opening Sting channel dropdown")
         self.browser.find_element(
             By.CSS_SELECTOR, "td.rcbArrowCell.rcbArrowCellRight").click()
         self.store_temporary_screenshot()
+        self.remember_action("Selecting Sting payment channel")
         WebDriverWait(self.browser, 1)\
             .until(EC.element_to_be_clickable((By.XPATH, "//li[contains(text(),'СП-30 дни, БАНКОВ ПРЕВОД')]"))).click()
         self.store_temporary_screenshot()
+        self.remember_action("Confirming Sting channel selection")
         self.browser.find_element(
             By.CSS_SELECTOR, "td input[type='image']").click()
         self.clearCart()
 
         # Change search method to "contains" instead of "starts-with"
         self.store_temporary_screenshot()
+        self.remember_action("Opening Sting search mode selector")
         self.browser.find_element(
             By.XPATH, "//input[starts-with(@value, 'започва с')]").click()
         self.store_temporary_screenshot()
+        self.remember_action("Switching Sting search mode to contains")
         WebDriverWait(self.browser, 2)\
             .until(EC.element_to_be_clickable((By.XPATH, "//ul[@class='rcbList']//li[contains(text(), 'съдържа')]"))).click()
 
@@ -150,6 +160,7 @@ class StingPharma(BrowserCommon):
     def _search_for_product(self, product_name: str) -> Tuple[Optional[WebElement], Optional[list[str]]]:
         logger.info(
             "StingPharma:_search_for_product(): product_name:" + product_name)
+        self.remember_action(f"Searching Sting for product '{product_name}'")
         self._clearSearchResult()
         self.browser.find_element(By.XPATH, self.SEARCH_BOX_XPATH).clear()
         self.browser.find_element(
@@ -223,6 +234,7 @@ class StingPharma(BrowserCommon):
             return
 
         self.lastSearchWasEmpty = True
+        self.remember_action("Clearing previous Sting search results")
         logger.info("StingPharma:_clearSearchResult() - clearing last result")
         self.browser.find_element(By.XPATH, self.SEARCH_BOX_XPATH).clear()
         self.browser.find_element(
@@ -244,13 +256,16 @@ class StingPharma(BrowserCommon):
                 "StingPharma:_search_for_product(): Spinner didn't appear, return None!")
 
     def refresh_page(self):
+        self.remember_action("Refreshing Sting product page")
         self.browser.refresh()
         # Change search method to "contains" instead of "starts-with"
         try:
             self.store_temporary_screenshot()
+            self.remember_action("Reopening Sting search mode selector after refresh")
             WebDriverWait(self.browser, 2)\
                 .until(EC.element_to_be_clickable((By.XPATH, "//input[starts-with(@value, 'започва с')]"))).click()
             self.store_temporary_screenshot()
+            self.remember_action("Restoring Sting search mode to contains after refresh")
             WebDriverWait(self.browser, 2)\
                 .until(EC.element_to_be_clickable((By.XPATH, "//ul[@class='rcbList']//li[contains(text(), 'съдържа')]"))).click()
         except Exception:
@@ -296,6 +311,7 @@ class StingPharma(BrowserCommon):
         )
 
     def add_product_to_cart(self, __product_name: str, quantity: int):
+        self.remember_action(f"Adding product to Sting cart with quantity {quantity}")
         self.browser.find_element(
             By.XPATH, "//td//input[contains(@id, 'QtyResults') and contains(@type, 'text')]").clear()
         self.browser.find_element(
