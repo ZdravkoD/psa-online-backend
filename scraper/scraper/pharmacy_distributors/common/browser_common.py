@@ -84,14 +84,67 @@ class BrowserCommon():
         except Exception as exc:
             return f"<unavailable: {exc}>"
 
+    def _safe_get_current_window_handle(self) -> str:
+        try:
+            return str(self.browser.current_window_handle)
+        except Exception as exc:
+            return f"<unavailable: {exc}>"
+
+    def _safe_execute_script(self, script: str) -> str:
+        try:
+            result = self.browser.execute_script(script)
+            if result is None:
+                return "<none>"
+            return str(result)
+        except Exception as exc:
+            return f"<unavailable: {exc}>"
+
+    def _safe_get_page_source_length(self) -> str:
+        try:
+            return str(len(self.browser.page_source or ""))
+        except Exception as exc:
+            return f"<unavailable: {exc}>"
+
+    def _safe_get_browser_name(self) -> str:
+        try:
+            capabilities = self.browser.capabilities or {}
+            return str(capabilities.get("browserName") or "<unknown>")
+        except Exception as exc:
+            return f"<unavailable: {exc}>"
+
+    def _safe_get_browser_version(self) -> str:
+        try:
+            capabilities = self.browser.capabilities or {}
+            return str(capabilities.get("browserVersion") or capabilities.get("version") or "<unknown>")
+        except Exception as exc:
+            return f"<unavailable: {exc}>"
+
+    def _infer_browser_state(self, current_url: str, page_title: str, page_source_length: str) -> str:
+        if current_url == "data:," and page_title.strip() == "":
+            return "blank startup page; navigation may not have started or browser failed before first page load"
+        if current_url.startswith("chrome-error://"):
+            return "chrome internal error page"
+        if page_source_length == "0":
+            return "empty page source"
+        return "page loaded or partially loaded"
+
     def get_debug_context(self) -> dict:
+        page_title = self._safe_get_title()
+        current_url = self._safe_get_current_url()
+        page_source_length = self._safe_get_page_source_length()
         return {
             "scraper": self.get_name(),
             "current_action": self.current_action,
             "recent_actions": list(self.recent_actions),
-            "page_title": self._safe_get_title(),
-            "current_url": self._safe_get_current_url(),
+            "page_title": page_title,
+            "current_url": current_url,
             "window_handles": self._safe_get_window_handles(),
+            "current_window_handle": self._safe_get_current_window_handle(),
+            "document_ready_state": self._safe_execute_script("return document.readyState"),
+            "page_source_length": page_source_length,
+            "browser_name": self._safe_get_browser_name(),
+            "browser_version": self._safe_get_browser_version(),
+            "browser_state": self._infer_browser_state(current_url, page_title, page_source_length),
         }
 
     def format_debug_context(self) -> str:
@@ -102,6 +155,11 @@ class BrowserCommon():
             f"Page title: {context['page_title']}",
             f"Current URL: {context['current_url']}",
             f"Window handles: {context['window_handles']}",
+            f"Current window handle: {context['current_window_handle']}",
+            f"Document ready state: {context['document_ready_state']}",
+            f"Page source length: {context['page_source_length']}",
+            f"Browser: {context['browser_name']} {context['browser_version']}",
+            f"Browser state: {context['browser_state']}",
         ]
         if context["recent_actions"]:
             lines.append("Recent actions:")
