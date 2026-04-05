@@ -1,8 +1,12 @@
 import logging
 import math
+import html
+import json
+import re
 import time
 from typing import Optional, Tuple
 
+import requests
 from pharmacy_distributors.common.models import ScrapedProductInfo
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
@@ -23,6 +27,7 @@ logger.setLevel(logging.DEBUG)
 
 
 class StingPharma(BrowserCommon):
+    REQUEST_TIMEOUT_SECONDS = 30
 
     def __init__(self, pharmacyID: str):
         logger.info("StingPharma.__init__()")
@@ -43,6 +48,8 @@ class StingPharma(BrowserCommon):
         self.SEARCH_BUTTON_XPATH = "//input[contains(@title, 'Търси')]"
 
         self.lastSearchWasEmpty = True
+        self._postback_form_state: dict[str, str] | None = None
+        self._last_search_result_name: str | None = None
 
     def login(self):
         self.remember_action("Opening Sting login page")
@@ -168,6 +175,203 @@ class StingPharma(BrowserCommon):
 
         return star_element is not None
 
+    def _build_requests_session(self) -> requests.Session:
+        session = requests.Session()
+        for cookie in self.browser.get_cookies():
+            session.cookies.set(
+                cookie["name"],
+                cookie["value"],
+                domain=cookie.get("domain"),
+                path=cookie.get("path"),
+            )
+        return session
+
+    def _capture_postback_form_state_from_browser(self) -> dict[str, str]:
+        state: dict[str, str] = {}
+        for element in self.browser.find_elements(By.XPATH, "//input[@name]"):
+            name = element.get_attribute("name") or ""
+            if name == "":
+                continue
+            state[name] = element.get_attribute("value") or ""
+        return state
+
+    def _get_postback_form_state(self) -> dict[str, str]:
+        if self._postback_form_state is None:
+            self._postback_form_state = self._capture_postback_form_state_from_browser()
+        return dict(self._postback_form_state)
+
+    def _update_postback_form_state(self, response_text: str, product_name: str):
+        if self._postback_form_state is None:
+            self._postback_form_state = {}
+
+        self._postback_form_state[self._get_name_filter_box_field_name()] = product_name
+        self._postback_form_state[self._get_name_filter_box_client_state_field_name()] = json.dumps(
+            {
+                "enabled": True,
+                "emptyMessage": "Име на Артикул / Генерика / Код НЗОК",
+                "validationText": product_name,
+                "valueAsString": product_name,
+                "lastSetTextBoxValue": product_name,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+        for field_name, value in re.findall(r"hiddenField\|([^|]+)\|([^|]*)", response_text):
+            self._postback_form_state[field_name] = value
+
+        grid_html = self._extract_results_panel_html(response_text)
+        if grid_html is None:
+            return
+
+        grid_state_match = re.search(
+            r'name="([^"]*RadGridResults_ClientState)"[^>]*value="([^"]*)"',
+            grid_html,
+            re.S,
+        )
+        if grid_state_match is not None:
+            self._postback_form_state[grid_state_match.group(1)] = html.unescape(grid_state_match.group(2))
+
+    def _get_search_button_field_name(self) -> str:
+        return (
+            "ctl00$ctl00$ctl00$ctl00$ctl00$ContentPlaceHolderBody$ContentPlaceHolderBody$"
+            "ContentPlaceHolderBody$ContentPlaceHolderBody$ContentPlaceHolderBody$SearchButton"
+        )
+
+    def _get_rad_script_manager_field_name(self) -> str:
+        return "ctl00$ctl00$ctl00$ctl00$ctl00$RadScriptManager1"
+
+    def _get_name_filter_box_field_name(self) -> str:
+        return (
+            "ctl00$ctl00$ctl00$ctl00$ctl00$ContentPlaceHolderBody$ContentPlaceHolderBody$"
+            "ContentPlaceHolderBody$ContentPlaceHolderBody$ContentPlaceHolderBody$NameFilterBox"
+        )
+
+    def _get_name_filter_box_client_state_field_name(self) -> str:
+        return (
+            "ctl00_ctl00_ctl00_ctl00_ctl00_ContentPlaceHolderBody_ContentPlaceHolderBody_"
+            "ContentPlaceHolderBody_ContentPlaceHolderBody_ContentPlaceHolderBody_NameFilterBox_ClientState"
+        )
+
+    def _build_search_postback_payload(self, product_name: str) -> dict[str, str]:
+        payload = self._get_postback_form_state()
+        search_button_name = self._get_search_button_field_name()
+        payload[self._get_rad_script_manager_field_name()] = (
+            f"{self._get_rad_script_manager_field_name()}|{search_button_name}"
+        )
+        payload[self._get_name_filter_box_field_name()] = product_name
+        payload[self._get_name_filter_box_client_state_field_name()] = json.dumps(
+            {
+                "enabled": True,
+                "emptyMessage": "Име на Артикул / Генерика / Код НЗОК",
+                "validationText": product_name,
+                "valueAsString": product_name,
+                "lastSetTextBoxValue": product_name,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        payload["__ASYNCPOST"] = "true"
+        payload[f"{search_button_name}.x"] = "12"
+        payload[f"{search_button_name}.y"] = "12"
+        return payload
+
+    def _search_for_product_via_postback(self, product_name: str) -> Tuple[Optional[dict], Optional[list[str]]]:
+        self.remember_action(f"Searching Sting for product '{product_name}' via postback")
+        response = self._build_requests_session().post(
+            self.browser.current_url,
+            data=self._build_search_postback_payload(product_name),
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "X-MicrosoftAjax": "Delta=true",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": self.browser.current_url,
+                "Origin": "https://web.stingpharma.com",
+                "User-Agent": self.browser.execute_script("return navigator.userAgent"),
+            },
+            timeout=self.REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        self._update_postback_form_state(response.text, product_name)
+
+        parsed_rows = self._parse_search_results_panel_html(response.text)
+        if parsed_rows is None:
+            raise ValueError("StingPharma: Could not parse Sting postback search response")
+
+        if len(parsed_rows) == 0:
+            self.lastSearchWasEmpty = True
+            return None, None
+
+        if len(parsed_rows) > 1:
+            self.lastSearchWasEmpty = False
+            return None, [row["name"] for row in parsed_rows]
+
+        self.lastSearchWasEmpty = False
+        return parsed_rows[0], None
+
+    def _extract_results_panel_html(self, response_text: str) -> Optional[str]:
+        match = re.search(
+            r"updatePanel\|[^|]*RadGridResultsPanel\|(.*?)\|\d+\|(?:updatePanel|hiddenField|scriptBlock|onSubmit|asyncPostBackControlIDs)\|",
+            response_text,
+            re.S,
+        )
+        if match is None:
+            return None
+        return match.group(1)
+
+    def _strip_html_text(self, value: str) -> str:
+        without_tags = re.sub(r"<[^>]+>", "", value)
+        normalized = html.unescape(without_tags).replace("\xa0", " ")
+        return re.sub(r"\s+", " ", normalized).strip()
+
+    def _parse_search_results_panel_html(self, response_text: str) -> Optional[list[dict]]:
+        panel_html = self._extract_results_panel_html(response_text)
+        if panel_html is None:
+            return None
+
+        if "Няма открити артикули." in panel_html:
+            return []
+
+        header_matches = re.findall(r"<th\b([^>]*)>(.*?)</th>", panel_html, re.S)
+        visible_headers: list[str] = []
+        for attrs, content in header_matches:
+            if "display:none" in attrs.replace(" ", ""):
+                continue
+            visible_headers.append(self._strip_html_text(content))
+
+        if len(visible_headers) == 0:
+            return None
+
+        rows: list[dict] = []
+        for row_html in re.findall(r"<tr class=\"rg(?:Row|AltRow)\".*?</tr>", panel_html, re.S):
+            cell_matches = re.findall(r"<td\b([^>]*)>(.*?)</td>", row_html, re.S)
+            visible_cells: list[str] = []
+            raw_cells: list[tuple[str, str]] = []
+            for attrs, content in cell_matches:
+                raw_cells.append((attrs, content))
+                if "display:none" in attrs.replace(" ", ""):
+                    continue
+                visible_cells.append(self._strip_html_text(content))
+
+            if len(visible_cells) != len(visible_headers):
+                continue
+
+            row_data = dict(zip(visible_headers, visible_cells))
+            price_text = row_data.get("Цена с ТО €", "")
+            if price_text == "":
+                continue
+
+            rows.append(
+                {
+                    "name": row_data.get("Артикул", ""),
+                    "price": float(price_text.replace(",", ".")),
+                    "is_on_promotion": "PromoOpener" in row_html,
+                    "has_add_input": any("QtyResults" in content for _, content in raw_cells),
+                }
+            )
+
+        return rows
+
     def _search_for_product(self, product_name: str) -> Tuple[Optional[WebElement], Optional[list[str]]]:
         logger.info(
             "StingPharma:_search_for_product(): product_name:" + product_name)
@@ -237,6 +441,7 @@ class StingPharma(BrowserCommon):
         logger.info(
             "StingPharma:_search_for_product(): Found product " + product_name)
         self.lastSearchWasEmpty = False
+        self._last_search_result_name = product_name
         return element, None
 
     def _clearSearchResult(self):
@@ -288,6 +493,22 @@ class StingPharma(BrowserCommon):
         for productName in productSearchNames:
             logger.info(
                 "StingPharma.get_product_name_and_price(): Searching for product: '" + productName + "'...")
+            try:
+                parsed_row, alternative_names = self._search_for_product_via_postback(productName)
+                if parsed_row is not None:
+                    self._last_search_result_name = None
+                    return ScrapedProductInfo(
+                        name=parsed_row["name"],
+                        price=parsed_row["price"],
+                        is_on_promotion=parsed_row["is_on_promotion"],
+                        alternative_names=all_alternative_names if len(all_alternative_names) > 0 else None
+                    )
+                if alternative_names is not None:
+                    all_alternative_names.extend(alternative_names)
+                continue
+            except Exception as exc:
+                logger.warning("StingPharma: Postback search failed for '%s', falling back to UI flow: %s", productName, exc)
+
             element, alternative_names = self._search_for_product(productName)
             if alternative_names is not None:
                 all_alternative_names.extend(alternative_names)
@@ -322,6 +543,10 @@ class StingPharma(BrowserCommon):
         )
 
     def add_product_to_cart(self, __product_name: str, quantity: int):
+        if self._last_search_result_name != __product_name:
+            element, _ = self._search_for_product(__product_name)
+            if element is None:
+                return False
         self.remember_action(f"Adding product to Sting cart with quantity {quantity}")
         self.browser.find_element(
             By.XPATH, "//td//input[contains(@id, 'QtyResults') and contains(@type, 'text')]").clear()
@@ -332,5 +557,7 @@ class StingPharma(BrowserCommon):
             By.XPATH, "//input[starts-with(@title, 'Добави количеството')]").click()
 
         self.refresh_page()
+        self._postback_form_state = None
+        self._last_search_result_name = None
 
         return True
