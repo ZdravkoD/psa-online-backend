@@ -131,6 +131,18 @@ class TaskHandlerErrorDetailsTests(unittest.TestCase):
             "Валидиране на входния файл: стъпка 'orders.json' се провали, защото JSON съдържанието не е валидно."
         )
 
+    def test_build_task_progress_message_is_human_readable(self):
+        result = task_handler_module.build_task_progress_message(
+            "АСАМ ПАН БИЛКОВ МЕХЛЕМ",
+            4,
+            65,
+        )
+
+        self.assertEqual(
+            result,
+            "Обработва се продукт 'АСАМ ПАН БИЛКОВ МЕХЛЕМ' (4 от 65)"
+        )
+
 
 class TaskHandlerCosmosCachingTests(unittest.TestCase):
     def _build_handler(self):

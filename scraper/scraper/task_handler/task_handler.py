@@ -95,6 +95,15 @@ def build_task_error_details(error: Exception, scrapers: List[BrowserCommon]) ->
     return "\n".join(details)
 
 
+def build_task_progress_message(original_product_name: str | None, current_input_row: int, total_number_of_rows: int) -> str:
+    if original_product_name:
+        return (
+            f"Обработва се продукт '{original_product_name}' "
+            f"({current_input_row} от {total_number_of_rows})"
+        )
+    return f"Обработва се ред {current_input_row} от {total_number_of_rows}"
+
+
 class ProductInfo:
     def __init__(self, scraper: BrowserCommon, name: str, price: Optional[float], is_on_promotion: bool, alternative_names: List[str]):
         self.scraper = scraper
@@ -348,7 +357,11 @@ class TaskHandler:
                 progress.current_input_row / progress.total_number_of_rows * 100)
             self.task_update_publisher.publish_progress_update(
                 taskItem=self.taskItem,
-                message=json.dumps(progress.to_json()),
+                message=build_task_progress_message(
+                    progress.original_product_name,
+                    progress.current_input_row,
+                    progress.total_number_of_rows,
+                ),
                 progress=progress_percent)
 
             self.buy_lowest_price_for_product(
