@@ -45,7 +45,7 @@ class StingPharma(BrowserCommon):
 
     def login(self):
         self.remember_action("Opening Sting login page")
-        self.browser.get(self.LOGIN_PAGE)
+        self.open_url(self.LOGIN_PAGE, retries=3)
         self.remember_action(f"Entering Sting username for pharmacy {self.user}")
         self.browser.find_element(
             By.CSS_SELECTOR, "input[id='Login1_UserName']").send_keys(self.user)

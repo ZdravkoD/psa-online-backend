@@ -99,12 +99,24 @@ class PhoenixPharma(BrowserCommon):
         return element
 
     def login(self):
-        self.remember_action("Opening Phoenix login page")
-        self.browser.get(self.DUMMY_PAGE)
-        self.browser.add_cookie({'name': 'cookiesAsked', 'value': 'true'})
-        self.browser.add_cookie({'name': 'cookiesAllowedMarketing', 'value': 'false'})
-        self.browser.add_cookie({'name': 'cookiesAllowedAnalytical', 'value': 'false'})
-        self.browser.get(self.LOGIN_PAGE)
+        last_error = None
+        for attempt in range(1, 4):
+            try:
+                self.remember_action("Opening Phoenix login page")
+                self.open_url(self.DUMMY_PAGE, retries=1)
+                self.browser.add_cookie({'name': 'cookiesAsked', 'value': 'true'})
+                self.browser.add_cookie({'name': 'cookiesAllowedMarketing', 'value': 'false'})
+                self.browser.add_cookie({'name': 'cookiesAllowedAnalytical', 'value': 'false'})
+                self.open_url(self.LOGIN_PAGE, retries=1)
+                break
+            except Exception as exc:
+                last_error = exc
+                logger.warning("PhoenixPharma: Login page bootstrap attempt %s/3 failed: %s", attempt, exc)
+                if attempt == 3:
+                    raise
+                self.restart_browser()
+        else:
+            raise last_error
 
         self.store_temporary_screenshot()
         self.remember_action(f"Entering Phoenix username for pharmacy {self.username}")

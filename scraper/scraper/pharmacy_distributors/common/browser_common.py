@@ -27,10 +27,66 @@ class BrowserCommon():
         self.current_action = "browser initialized"
 
     def initBrowser(self):
-        # Raises WebDriverException if the driver is not available
         check_webdriver_is_present()
+        last_error = None
+        for attempt in range(1, 4):
+            driver = None
+            try:
+                driver = webdriver.Chrome(get_browser_options())
+                driver.set_page_load_timeout(30)
+                driver.current_window_handle
+                driver.execute_script("return document.readyState")
+                self.browser = driver
+                return
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "BrowserCommon: Browser startup attempt %s/3 failed: %s",
+                    attempt,
+                    exc,
+                )
+                if driver is not None:
+                    try:
+                        driver.quit()
+                    except Exception:
+                        logger.warning("BrowserCommon: Failed to quit unhealthy browser session cleanly.")
 
-        self.browser = webdriver.Chrome(get_browser_options())
+        raise last_error
+
+    def restart_browser(self):
+        try:
+            if self.browser is not None:
+                self.browser.quit()
+        except Exception as exc:
+            logger.warning("BrowserCommon: Failed to quit browser during restart: %s", exc)
+        self.browser = None
+        self.initBrowser()
+
+    def open_url(self, url: str, *, retries: int = 2):
+        last_error = None
+        for attempt in range(1, retries + 1):
+            try:
+                self.browser.get(url)
+                current_url = self._safe_get_current_url()
+                if current_url in {"data:,", "about:blank"} or current_url.startswith("chrome-error://"):
+                    raise RuntimeError(
+                        f"Navigation failed to load '{url}'. Browser stayed on '{current_url}'."
+                    )
+                return
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "%s: Navigation attempt %s/%s to %s failed: %s",
+                    self.__class__.__name__,
+                    attempt,
+                    retries,
+                    url,
+                    exc,
+                )
+                if attempt < retries:
+                    self.restart_browser()
+
+        raise last_error
 
     def hasInternetConnection(self):
         try:

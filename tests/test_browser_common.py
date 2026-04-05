@@ -65,6 +65,33 @@ class BrowserCommonDebugContextTests(unittest.TestCase):
             result,
         )
 
+    def test_open_url_retries_when_browser_stays_on_blank_page(self):
+        scraper = browser_common_module.BrowserCommon("Phoenix", 20, shouldInitBrowser=False)
+
+        first_browser = types.SimpleNamespace(
+            current_url="data:,",
+            get=lambda url: None,
+        )
+        second_browser = types.SimpleNamespace(
+            current_url="https://b2b.phoenixpharma.bg/bg/build/production/BgShop/index.php",
+            get=lambda url: None,
+        )
+
+        browsers = iter([second_browser])
+        restart_calls = []
+
+        scraper.browser = first_browser
+
+        def restart_browser():
+            restart_calls.append("restart")
+            scraper.browser = next(browsers)
+
+        scraper.restart_browser = restart_browser
+
+        scraper.open_url("https://b2b.phoenixpharma.bg/bg/build/production/BgShop/index.php", retries=2)
+
+        self.assertEqual(restart_calls, ["restart"])
+
 
 if __name__ == "__main__":
     unittest.main()
