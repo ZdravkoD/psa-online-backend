@@ -103,6 +103,34 @@ class TaskHandlerErrorDetailsTests(unittest.TestCase):
         self.assertIn("Current action: Selecting Sting payment channel", result)
         self.assertIn("Current URL: http://example.test/page", result)
 
+    def test_build_task_error_summary_uses_scraper_action_and_reason(self):
+        scraper = mock.Mock()
+        scraper.get_name.return_value = "Phoenix"
+        scraper.current_action = "Adding product to Phoenix cart"
+
+        result = task_handler_module.build_task_error_summary(
+            RuntimeError("Phoenix: element click intercepted"),
+            [scraper],
+        )
+
+        self.assertEqual(
+            result,
+            "Phoenix - Изпълнение на задачата: стъпка 'Adding product to Phoenix cart' се провали, защото елементът не може да бъде кликнат, защото друг елемент го покрива."
+        )
+
+    def test_build_task_error_summary_uses_explicit_stage_and_operation(self):
+        result = task_handler_module.build_task_error_summary(
+            ValueError("The JSON content is not valid"),
+            [],
+            stage="Валидиране на входния файл",
+            operation="orders.json",
+        )
+
+        self.assertEqual(
+            result,
+            "Валидиране на входния файл: стъпка 'orders.json' се провали, защото JSON съдържанието не е валидно."
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

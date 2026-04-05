@@ -22,6 +22,71 @@ import concurrent.futures
 logger = logging.getLogger(__name__)
 
 
+def _short_error_reason(error_message: str) -> str:
+    lowered = error_message.lower()
+    if "pharmacy id not found" in lowered:
+        return "няма конфигурация за избраната аптека"
+    if "element click intercepted" in lowered:
+        return "елементът не може да бъде кликнат, защото друг елемент го покрива"
+    if "not found or could not be selected" in lowered:
+        return "неуспешен избор на клиент"
+    if "couldn't open input file" in lowered or "input file is not opened" in lowered:
+        return "входният файл не може да бъде отворен"
+    if "json content is not valid" in lowered:
+        return "JSON съдържанието не е валидно"
+    if "json content is not loaded" in lowered:
+        return "JSON съдържанието не е заредено"
+    if "all rows must be dictionaries" in lowered:
+        return "входните редове са в невалиден формат"
+    if "database is not initialized" in lowered:
+        return "връзката с базата данни не е инициализирана"
+    if "php sessid cookie is missing" in lowered:
+        return "липсва активна Phoenix сесия"
+    if "price header position was not found" in lowered:
+        return "не е открита колоната с цена"
+    if "target table row with an expiry date" in lowered:
+        return "не е открит ред с валиден срок на годност"
+    if "aborted by navigation" in lowered:
+        return "страницата се презареди или навигацията беше прекъсната"
+    if "timeout" in lowered:
+        return "операцията изтече по време"
+    if "проблем с входния excel файл" in lowered:
+        return "входният Excel файл е невалиден"
+    return error_message.strip() if error_message.strip() != "" else error_message.__class__.__name__
+
+
+def _find_matching_scraper(error_message: str, scrapers: List[BrowserCommon]) -> BrowserCommon | None:
+    matching_scraper = next((scraper for scraper in scrapers if scraper.get_name().lower() in error_message.lower()), None)
+    if matching_scraper is None and scrapers:
+        matching_scraper = scrapers[-1]
+    return matching_scraper
+
+
+def build_task_error_summary(
+    error: Exception,
+    scrapers: List[BrowserCommon],
+    *,
+    stage: str | None = None,
+    operation: str | None = None,
+) -> str:
+    error_message = str(error)
+    matching_scraper = _find_matching_scraper(error_message, scrapers)
+    reason = _short_error_reason(error_message)
+    if stage is None:
+        stage = "Изпълнение на задачата"
+
+    if operation is None:
+        if matching_scraper is not None and getattr(matching_scraper, "current_action", None):
+            operation = matching_scraper.current_action
+        else:
+            operation = "неизвестна операция"
+
+    if matching_scraper is None:
+        return f"{stage}: стъпка '{operation}' се провали, защото {reason}."
+
+    return f"{matching_scraper.get_name()} - {stage}: стъпка '{operation}' се провали, защото {reason}."
+
+
 def build_task_error_details(error: Exception, scrapers: List[BrowserCommon]) -> str:
     details = [f"Message: {str(error) if str(error).strip() != '' else repr(error)}"]
     for scraper in scrapers:
@@ -176,7 +241,7 @@ class TaskHandler:
 
             self.task_update_publisher.publish_error(
                 taskItem=self.taskItem,
-                message="Неуспешно завършване на задачата!",
+                message=build_task_error_summary(e, self.scrapers),
                 detailed_error_message=build_task_error_details(e, self.scrapers),
                 progress=0,
                 image_urls=image_urls)
@@ -203,8 +268,13 @@ class TaskHandler:
             logger.error("TaskHandler: Couldn't open the file: ", e)
             self.task_update_publisher.publish_error(
                 taskItem=self.taskItem,
-                message="Couldn't open the file: " + self.taskItem.file_name,
-                detailed_error_message=str(e),
+                message=build_task_error_summary(
+                    e,
+                    self.scrapers,
+                    stage="Зареждане на входния файл",
+                    operation=self.taskItem.file_name,
+                ),
+                detailed_error_message=build_task_error_details(e, self.scrapers),
                 progress=0)
             raise e
 
@@ -214,8 +284,13 @@ class TaskHandler:
             logger.error("TaskHandler: Couldn't validate the input file: ", e)
             self.task_update_publisher.publish_error(
                 taskItem=self.taskItem,
-                message="Couldn't validate the input file: " + self.taskItem.file_name,
-                detailed_error_message=str(e),
+                message=build_task_error_summary(
+                    e,
+                    self.scrapers,
+                    stage="Валидиране на входния файл",
+                    operation=self.taskItem.file_name,
+                ),
+                detailed_error_message=build_task_error_details(e, self.scrapers),
                 progress=0)
             raise e
 
@@ -228,8 +303,13 @@ class TaskHandler:
                 logger.error("TaskHandler: Couldn't get next row: ", e)
                 self.task_update_publisher.publish_error(
                     taskItem=self.taskItem,
-                    message="Couldn't get next row",
-                    detailed_error_message=str(e),
+                    message=build_task_error_summary(
+                        e,
+                        self.scrapers,
+                        stage="Обработка на входните данни",
+                        operation="прочитане на следващ ред",
+                    ),
+                    detailed_error_message=build_task_error_details(e, self.scrapers),
                     progress=progress_percent)
                 raise e
             if row_info.product_name_variations is None or row_info.product_quantity is None:
@@ -243,8 +323,13 @@ class TaskHandler:
                     "TaskHandler: Couldn't get custom product name variations: ", e)
                 self.task_update_publisher.publish_error(
                     taskItem=self.taskItem,
-                    message="Неуспешно извличане на вариации на продукт",
-                    detailed_error_message=str(e),
+                    message=build_task_error_summary(
+                        e,
+                        self.scrapers,
+                        stage="Подготовка на търсенето",
+                        operation=f"извличане на вариации за '{row_info.original_product_name}'",
+                    ),
+                    detailed_error_message=build_task_error_details(e, self.scrapers),
                     progress=progress_percent)
                 raise e
 

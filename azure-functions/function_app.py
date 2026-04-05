@@ -35,6 +35,10 @@ logging.basicConfig(
 )
 
 
+def json_body(data, *, default=None, cls=None) -> str:
+    return json.dumps(data, default=default, cls=cls, ensure_ascii=False)
+
+
 @app.route(route="task", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
 def create_task(req: func.HttpRequest) -> func.HttpResponse:
     """
@@ -152,7 +156,7 @@ def _create_task_json_content(req: func.HttpRequest) -> func.HttpResponse:
 
     send_message_to_servicebus_queue(task_item.to_json())
 
-    return func.HttpResponse(body=json.dumps({"id": str(task_item.id)}), status_code=201)
+    return func.HttpResponse(body=json_body({"id": str(task_item.id)}), status_code=201)
 
 
 def _create_task_file_content(req: func.HttpRequest) -> func.HttpResponse:
@@ -253,7 +257,7 @@ def _create_task_file_content(req: func.HttpRequest) -> func.HttpResponse:
 
     send_message_to_servicebus_queue(task_item.to_json())
 
-    return func.HttpResponse(body=json.dumps({"id": str(task_item.id)}), status_code=201)
+    return func.HttpResponse(body=json_body({"id": str(task_item.id)}), status_code=201)
 
 
 @app.route(route="task/{taskId}", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
@@ -275,7 +279,7 @@ def task(req: func.HttpRequest) -> func.HttpResponse:
             status_code=404
         )
 
-    return func.HttpResponse(body=json.dumps(task, default=str), status_code=200, mimetype="application/json")
+    return func.HttpResponse(body=json_body(task, default=str), status_code=200, mimetype="application/json")
 
 
 @app.route(route="tasks", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
@@ -286,13 +290,13 @@ def tasks(req: func.HttpRequest) -> func.HttpResponse:
         filter, projection, sort, skip, limit = _tasks_parse_params(req=req)
     except ValueError as err:
         return func.HttpResponse(
-            body=json.dumps({"error": str(err)}, cls=CustomJSONEncoder),
+            body=json_body({"error": str(err)}, cls=CustomJSONEncoder),
             status_code=400,
             mimetype="application/json")
 
     tasks = cosmosDbClient.read_items(collection_name="tasks", filter=filter, projection=projection, sort=sort, skip=skip, limit=limit)["items"]
 
-    return func.HttpResponse(body=json.dumps(tasks, cls=CustomJSONEncoder), status_code=200, mimetype="application/json")
+    return func.HttpResponse(body=json_body(tasks, cls=CustomJSONEncoder), status_code=200, mimetype="application/json")
 
 
 def _tasks_parse_params(req: func.HttpRequest) -> Tuple[Optional[dict], Optional[dict], Optional[dict], Optional[int], Optional[int]]:
@@ -326,7 +330,7 @@ def get_pharmacies(req: func.HttpRequest) -> func.HttpResponse:
 
     tasks = cosmosDbClient.read_items(collection_name="pharmacies")["items"]
 
-    return func.HttpResponse(body=json.dumps(tasks), status_code=200, mimetype="application/json")
+    return func.HttpResponse(body=json_body(tasks), status_code=200, mimetype="application/json")
 
 
 @app.route(route="distributors", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
@@ -335,7 +339,7 @@ def get_distributors(req: func.HttpRequest) -> func.HttpResponse:
 
     tasks = cosmosDbClient.read_items(collection_name="distributors")["items"]
 
-    return func.HttpResponse(body=json.dumps(tasks), status_code=200, mimetype="application/json")
+    return func.HttpResponse(body=json_body(tasks), status_code=200, mimetype="application/json")
 
 
 def upload_file_bytes_to_blob_storage(filename: str, file_data: bytes):
@@ -448,7 +452,7 @@ def get_product_names(req: func.HttpRequest) -> func.HttpResponse:
         filter, projection, sort, skip, limit = _product_names_parse_params(req=req)
     except ValueError as err:
         return func.HttpResponse(
-            body=json.dumps({"error": str(err)}, cls=CustomJSONEncoder),
+            body=json_body({"error": str(err)}, cls=CustomJSONEncoder),
             status_code=400,
             mimetype="application/json")
 
@@ -461,7 +465,7 @@ def get_product_names(req: func.HttpRequest) -> func.HttpResponse:
         limit=limit or 50  # Default page size is 50
     )
 
-    return func.HttpResponse(body=json.dumps(result, cls=CustomJSONEncoder), status_code=200, mimetype="application/json")
+    return func.HttpResponse(body=json_body(result, cls=CustomJSONEncoder), status_code=200, mimetype="application/json")
 
 
 def _product_names_parse_params(req: func.HttpRequest) -> Tuple[Optional[dict], Optional[dict], Optional[dict], Optional[int], Optional[int]]:
@@ -513,7 +517,7 @@ def get_product(req: func.HttpRequest) -> func.HttpResponse:
             status_code=500
         )
 
-    return func.HttpResponse(body=json.dumps(product, cls=CustomJSONEncoder), status_code=200, mimetype="application/json")
+    return func.HttpResponse(body=json_body(product, cls=CustomJSONEncoder), status_code=200, mimetype="application/json")
 
 
 @app.route(route="product/{id}", auth_level=func.AuthLevel.ANONYMOUS, methods=["PATCH"])
@@ -567,7 +571,7 @@ def update_product_name(req: func.HttpRequest) -> func.HttpResponse:
             status_code=500
         )
 
-    return func.HttpResponse(body=json.dumps(updated_product, cls=CustomJSONEncoder), status_code=200, mimetype="application/json")
+    return func.HttpResponse(body=json_body(updated_product, cls=CustomJSONEncoder), status_code=200, mimetype="application/json")
 
 
 @app.service_bus_queue_trigger(arg_name="msg", queue_name=os.getenv("psaonline_SERVICEBUS_QUEUE_TASK_UPDATES", "task-updates"), connection="psaonline_SERVICEBUS")
