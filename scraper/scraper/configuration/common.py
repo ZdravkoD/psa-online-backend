@@ -10,6 +10,14 @@ logger.setLevel(logging.DEBUG)
 load_dotenv(override=True)
 
 
+def mask_secret(secret: str, visible_chars: int = 2) -> str:
+    if not secret:
+        return ""
+    if len(secret) <= visible_chars * 2:
+        return "*" * len(secret)
+    return f"{secret[:visible_chars]}{'*' * (len(secret) - (visible_chars * 2))}{secret[-visible_chars:]}"
+
+
 def get_variable(
     env_variable_name, file_variable_name, path_to_json_file, default_value=None
 ) -> str:
@@ -104,7 +112,7 @@ class User:
         self.password = password
 
     def __str__(self):
-        return f"User(id={self.id}, username={self.username}, password={self.password})"
+        return f"User(id={self.id}, username={self.username}, password={mask_secret(self.password)})"
 
 
 class UserList:
@@ -113,7 +121,7 @@ class UserList:
         self.load_users(json_data)
 
     def load_users(self, json_data: Union[str, List[dict]]):
-        logger.info(f"Loading users from JSON data: {json_data} Type: {type(json_data)}")
+        logger.info("Loading users from JSON data. Type: %s", type(json_data))
         # Load user data from JSON, which is a string in JSON format
         # Check if json_data is a string, if so, parse it to JSON
         while isinstance(json_data, str):
@@ -121,13 +129,16 @@ class UserList:
 
         user_data = json_data
 
-        logger.info(f"user_data: {user_data} Type: {type(user_data)}")
+        logger.info("Loaded user config payload. Type: %s", type(user_data))
 
         for user_dict in user_data:
             user = User(id=user_dict['id'], username=user_dict['username'], password=user_dict['password'])
             self.users.append(user)
 
-        logger.debug(f"Loaded {len(self.users)} users from JSON data: {self.users[0]}")
+        if self.users:
+            logger.debug("Loaded %d users from JSON data. First user: %s", len(self.users), self.users[0])
+        else:
+            logger.debug("Loaded 0 users from JSON data")
 
     def get_user(self, username):
         # Retrieve a user by username

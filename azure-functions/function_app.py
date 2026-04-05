@@ -331,9 +331,8 @@ def get_distributors(req: func.HttpRequest) -> func.HttpResponse:
 
 def upload_file_bytes_to_blob_storage(filename: str, file_data: bytes):
     connection_string = os.getenv("AZURE_BLOB_STORAGE_CONNECTION_STRING", "")
-    logger.info(f"connection_string {connection_string}")
     container_name = os.getenv("AZURE_BLOB_STORAGE_INPUT_FILES_CONTAINER_NAME", "")
-    logger.info(f"container_name {container_name}")
+    logger.info("Uploading input file to blob container %s", container_name)
     blob_service_client = BlobServiceClient.from_connection_string(connection_string)
     container_client: ContainerClient = blob_service_client.get_container_client(container_name)
     blob_client: BlobClient = container_client.get_blob_client(build_blob_object_name(filename))
