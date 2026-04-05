@@ -164,6 +164,12 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         try:
             self._add_product_to_cart_optimized(quantity)
         except Exception as e:
+            if self._is_retryable_navigation_error(e):
+                logger.warning("PhoenixPharma: Retrying add-to-cart after navigation error: %s", str(e))
+                self.refresh_page()
+                self._search_for_product(product_name)
+                self._add_product_to_cart_optimized(quantity)
+                return True
             logger.error("PhoenixPharma: An error occurred while adding product to cart: %s", str(e))
             close_buttons = self.browser.find_elements(By.XPATH, "//div[contains(@data-qtip,'Close dialog')]")
             for close_button in close_buttons:

@@ -50,6 +50,8 @@ support_ec_module = ensure_module("selenium.webdriver.support.expected_condition
 support_ec_module.element_to_be_clickable = lambda locator: locator
 selenium_exceptions_module = ensure_module("selenium.common.exceptions")
 selenium_exceptions_module.ElementClickInterceptedException = type("ElementClickInterceptedException", (Exception,), {})
+selenium_exceptions_module.TimeoutException = type("TimeoutException", (Exception,), {})
+selenium_exceptions_module.WebDriverException = type("WebDriverException", (Exception,), {})
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scraper" / "scraper" / "pharmacy_distributors" / "phoenix" / "phoenix.py"
@@ -70,12 +72,18 @@ class PhoenixPrepareForOrderTests(unittest.TestCase):
         clickable_element = mock.Mock()
         phoenix.browser.find_element.return_value = clickable_element
 
+        wait_mask = mock.Mock()
+        wait_mask.until_not.return_value = True
         wait_click_success = mock.Mock()
         wait_click_success.until.return_value = clickable_element
         wait_click_failure = mock.Mock()
         wait_click_failure.until.side_effect = RuntimeError("not found")
 
-        with mock.patch.object(phoenix_module, "WebDriverWait", side_effect=[wait_click_success, wait_click_failure]):
+        with mock.patch.object(
+            phoenix_module,
+            "WebDriverWait",
+            side_effect=[wait_mask, wait_click_success, wait_mask, wait_mask, wait_click_success, wait_click_failure],
+        ):
             with self.assertRaisesRegex(ValueError, "Phoenix client with pharmacy ID 'tolstoy' was not found or could not be selected."):
                 phoenix.prepare_for_order()
 
