@@ -132,5 +132,76 @@ class TaskHandlerErrorDetailsTests(unittest.TestCase):
         )
 
 
+class TaskHandlerCosmosCachingTests(unittest.TestCase):
+    def _build_handler(self):
+        handler = task_handler_module.TaskHandler.__new__(task_handler_module.TaskHandler)
+        handler._custom_variations_by_product_name = {}
+        handler._variation_doc_id_by_product_name = {}
+        handler._pending_generated_variations_by_product_name = {}
+        handler.cosmos_db_client = None
+        return handler
+
+    def test_prepare_custom_variations_cache_loads_all_products_once(self):
+        handler = self._build_handler()
+        handler.file_worker = mock.Mock()
+        handler.file_worker.get_distinct_original_product_names.return_value = ["A", "B"]
+        handler.cosmos_db_client = mock.Mock()
+        handler.cosmos_db_client.read_items.return_value = [
+            {
+                "id": "doc-a",
+                "original_product_name": "A",
+                "custom_product_name_variations": ["alpha"],
+            }
+        ]
+
+        with mock.patch.object(task_handler_module, "CosmosDbClient", return_value=handler.cosmos_db_client):
+            handler._prepare_custom_product_name_variations_cache()
+
+        handler.cosmos_db_client.read_items.assert_called_once_with(
+            collection_name="product_name_variations",
+            filter={"original_product_name": {"$in": ["A", "B"]}},
+            projection={"custom_product_name_variations": 1, "original_product_name": 1},
+        )
+        self.assertEqual(handler._custom_variations_by_product_name, {"A": ["alpha"], "B": []})
+        self.assertEqual(handler._variation_doc_id_by_product_name, {"A": "doc-a"})
+
+    def test_get_custom_variations_uses_cache_and_flush_batches_create_and_update(self):
+        handler = self._build_handler()
+        handler.cosmos_db_client = mock.Mock()
+        handler._custom_variations_by_product_name = {"A": ["alpha"], "B": []}
+        handler._variation_doc_id_by_product_name = {"A": "doc-a"}
+
+        row_a = types.SimpleNamespace(
+            original_product_name="A",
+            product_name_variations=["a1", "a2"],
+            custom_product_name_variations=[],
+        )
+        row_b = types.SimpleNamespace(
+            original_product_name="B",
+            product_name_variations=["b1"],
+            custom_product_name_variations=[],
+        )
+
+        handler._get_custom_product_name_variations(row_a)
+        handler._get_custom_product_name_variations(row_b)
+        handler._flush_custom_product_name_variations_cache()
+
+        self.assertEqual(row_a.custom_product_name_variations, ["alpha"])
+        self.assertEqual(row_b.custom_product_name_variations, [])
+        handler.cosmos_db_client.update_item.assert_called_once_with(
+            collection_name="product_name_variations",
+            item_id="doc-a",
+            document={"generated_product_variations": ["a1", "a2"]},
+        )
+        handler.cosmos_db_client.create_item.assert_called_once_with(
+            collection_name="product_name_variations",
+            document={
+                "original_product_name": "B",
+                "generated_product_variations": ["b1"],
+                "custom_product_name_variations": [],
+            },
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4,6 +4,7 @@ import time
 from typing import Optional, Tuple
 
 from pharmacy_distributors.common.models import ScrapedProductInfo
+from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
@@ -71,6 +72,16 @@ class StingPharma(BrowserCommon):
             logger.info(e)
 
     def prepare_for_order(self):
+        try:
+            self._prepare_for_order_once()
+        except (TimeoutException, WebDriverException) as exc:
+            if not self._is_retryable_navigation_error(exc):
+                raise
+            logger.warning("StingPharma: Retrying prepare_for_order after transient navigation error: %s", exc)
+            time.sleep(1)
+            self._prepare_for_order_once()
+
+    def _prepare_for_order_once(self):
         self.store_temporary_screenshot()
         self.remember_action("Navigating to Sting channel selection")
         # go to Search page

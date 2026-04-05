@@ -6,6 +6,7 @@ from collections import deque
 
 from pharmacy_distributors.common.models import ScrapedProductInfo
 from selenium import webdriver
+from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.webdriver import WebDriver
 
@@ -101,26 +102,55 @@ class BrowserCommon():
         cwd = os.getcwd()
         screenShotName = cwd + "/Screenshots/" + dt_string + "_" + self.__class__.__name__ + "_ScreenshotOnException.png"
         logger.info("BrowserCommon: Storing Screenshot: %s", screenShotName)
-        self.browser.save_screenshot(screenShotName)
+        try:
+            self.browser.save_screenshot(screenShotName)
+        except (TimeoutException, WebDriverException) as exc:
+            if self._is_retryable_navigation_error(exc):
+                logger.warning("BrowserCommon: Skipping screenshot save during transient navigation error: %s", exc)
+                return
+            raise
 
     def getScreenshot(self) -> Tuple[bytes, str]:
         logger.info("BrowserCommon: Getting Screenshot...")
         dt_string = datetime.now().strftime("%Y.%m.%d_%H.%M.%S")
         screenShotName = dt_string + "_" + self.__class__.__name__ + "_ScreenshotOnException.png"
         logger.info("BrowserCommon: Returning Screenshot: %s", screenShotName)
-        return self.browser.get_screenshot_as_png(), screenShotName
+        try:
+            return self.browser.get_screenshot_as_png(), screenShotName
+        except (TimeoutException, WebDriverException) as exc:
+            if self._is_retryable_navigation_error(exc):
+                logger.warning("BrowserCommon: Skipping screenshot capture during transient navigation error: %s", exc)
+                return b"", screenShotName
+            raise
 
     def store_temporary_screenshot(self):
         """
         Stores the 3 most recent screenshots in the temporary_screenshotts deque
         """
-        screenshot = self.browser.get_screenshot_as_png()
+        try:
+            screenshot = self.browser.get_screenshot_as_png()
+        except (TimeoutException, WebDriverException) as exc:
+            if self._is_retryable_navigation_error(exc):
+                logger.warning("BrowserCommon: Skipping temporary screenshot during transient navigation error: %s", exc)
+                return
+            raise
         self.temporary_screenshotts.appendleft(screenshot)
+
+    def get_performance_logs(self) -> list[dict]:
+        try:
+            return self.browser.get_log("performance")
+        except Exception as exc:
+            logger.warning("BrowserCommon: Failed to fetch performance logs: %s", exc)
+            return []
 
     def remember_action(self, action: str):
         self.current_action = action
         self.recent_actions.appendleft(action)
         logger.info("%s: %s", self.__class__.__name__, action)
+
+    def _is_retryable_navigation_error(self, exc: Exception) -> bool:
+        lowered = str(exc).lower()
+        return "aborted by navigation" in lowered or "not attached to an active page" in lowered
 
     def _safe_get_current_url(self) -> str:
         try:

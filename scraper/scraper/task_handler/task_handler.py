@@ -193,6 +193,10 @@ class TaskHandler:
         self.scrapers: List[BrowserCommon] = []
         self.bought_products: List[BoughtProductInfo] = []
         self.unbought_products: List[UnboughtProductInfo] = []
+        self.cosmos_db_client: CosmosDbClient | None = None
+        self._custom_variations_by_product_name: dict[str, list[str]] = {}
+        self._variation_doc_id_by_product_name: dict[str, str] = {}
+        self._pending_generated_variations_by_product_name: dict[str, list[str]] = {}
         try:
             self.file_worker: FileWorker = FileWorkerFactory(
                 taskItem.file_type).get_file_worker()
@@ -212,6 +216,7 @@ class TaskHandler:
         logger.info(f"Handling task: {self.taskItem.to_json()}")
         try:
             self._open_and_validate_input_file()
+            self._prepare_custom_product_name_variations_cache()
             for scraper in self.scrapers:
                 scraper.login()
                 scraper.prepare_for_order()
@@ -246,6 +251,11 @@ class TaskHandler:
                 progress=0,
                 image_urls=image_urls)
             return
+        finally:
+            try:
+                self._flush_custom_product_name_variations_cache()
+            except Exception as flush_error:
+                logger.error("TaskHandler: Couldn't flush product name variations cache: %s", flush_error)
 
     def _get_scrapers(self) -> List[BrowserCommon]:
         scrapers: List[BrowserCommon] = []
@@ -462,29 +472,62 @@ class TaskHandler:
         """
         Fetches custom product name variations from the CosmosDB database
         """
-        cosmos_db_client = CosmosDbClient()
-        items = cosmos_db_client.read_items(
+        if row_info.original_product_name is None:
+            row_info.custom_product_name_variations = []
+            return
+
+        row_info.custom_product_name_variations = self._custom_variations_by_product_name.get(
+            row_info.original_product_name,
+            [],
+        )
+        self._pending_generated_variations_by_product_name[row_info.original_product_name] = row_info.product_name_variations
+
+    def _prepare_custom_product_name_variations_cache(self):
+        original_product_names = self.file_worker.get_distinct_original_product_names()
+        if not original_product_names:
+            return
+
+        self.cosmos_db_client = CosmosDbClient()
+        items = self.cosmos_db_client.read_items(
             collection_name="product_name_variations",
-            filter={"original_product_name": row_info.original_product_name},
-            projection={"custom_product_name_variations": 1}
+            filter={"original_product_name": {"$in": original_product_names}},
+            projection={"custom_product_name_variations": 1, "original_product_name": 1},
         )
 
-        if not items:
-            # No items found, insert a new document
-            cosmos_db_client.create_item(
+        self._custom_variations_by_product_name = {
+            item["original_product_name"]: item.get("custom_product_name_variations", [])
+            for item in items
+            if item.get("original_product_name") is not None
+        }
+        self._variation_doc_id_by_product_name = {
+            item["original_product_name"]: item["id"]
+            for item in items
+            if item.get("original_product_name") is not None and item.get("id") is not None
+        }
+
+        for original_product_name in original_product_names:
+            self._custom_variations_by_product_name.setdefault(original_product_name, [])
+
+    def _flush_custom_product_name_variations_cache(self):
+        if self.cosmos_db_client is None:
+            return
+
+        for original_product_name, generated_variations in self._pending_generated_variations_by_product_name.items():
+            item_id = self._variation_doc_id_by_product_name.get(original_product_name)
+            if item_id is None:
+                created_id = self.cosmos_db_client.create_item(
+                    collection_name="product_name_variations",
+                    document={
+                        "original_product_name": original_product_name,
+                        "generated_product_variations": generated_variations,
+                        "custom_product_name_variations": self._custom_variations_by_product_name.get(original_product_name, []),
+                    }
+                )
+                self._variation_doc_id_by_product_name[original_product_name] = str(created_id)
+                continue
+
+            self.cosmos_db_client.update_item(
                 collection_name="product_name_variations",
-                document={
-                    "original_product_name": row_info.original_product_name,
-                    "generated_product_variations": row_info.product_name_variations,
-                    "custom_product_name_variations": []
-                }
-            )
-            row_info.custom_product_name_variations = []
-        else:
-            # Update row_info's custom_product_variations
-            row_info.custom_product_name_variations = items[0].get("custom_product_name_variations", [])
-            cosmos_db_client.update_item(
-                collection_name="product_name_variations",
-                item_id=items[0].get("id"),
-                document={"generated_product_variations": row_info.product_name_variations}
+                item_id=item_id,
+                document={"generated_product_variations": generated_variations},
             )

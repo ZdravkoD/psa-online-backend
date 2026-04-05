@@ -41,6 +41,7 @@ class ExcelWorker(FileWorker):
         self.boughtProducts = []
         # This set is needed in order to ignore duplicate products in our input file
         self.metProducts = set()
+        self._cached_number_of_rows: int | None = None
 
     def open_file(self, blob_url: str):
         # Parse the URL to get the path part
@@ -68,6 +69,7 @@ class ExcelWorker(FileWorker):
             logger.exception(f"ExcelWorker: Can't open input file: {str(e)}")
             raise Exception(f"ExcelWorker: Can't open input file: {str(e)}")
 
+        self._cached_number_of_rows = None
         self.outputFile = openpyxl.Workbook()
         self.outputSheet = self.outputFile["Sheet"]
         self.outputSheet.title = "Report"
@@ -85,6 +87,9 @@ class ExcelWorker(FileWorker):
         if self.inputSheet is None:
             raise Exception("ExcelWorker: Input file is not opened")
 
+        if self._cached_number_of_rows is not None:
+            return self._cached_number_of_rows
+
         max_row = 0
         for row in self.inputSheet.iter_rows():
             if any(cell.value is not None for cell in row):
@@ -93,6 +98,7 @@ class ExcelWorker(FileWorker):
                 except Exception as e:
                     logger.exception(f"ExcelWorker: (Ред: {max_row + 1}) Неуспешно преброяване на редовете във файла: {str(e)}")
                     raise Exception(f"ExcelWorker: (Ред: {max_row + 1}) Неуспешно преброяване на редовете във файла: {str(e)}")
+        self._cached_number_of_rows = max_row
         return max_row
 
     def get_next_row(self) -> RowInfo:
@@ -206,6 +212,21 @@ class ExcelWorker(FileWorker):
             self.currentInputRow - NUMBER_OF_ROWS_TO_SKIP_FROM_INPUT_SHEET - 1,
             self.nrows - NUMBER_OF_ROWS_TO_SKIP_FROM_INPUT_SHEET - 1
         )
+
+    def get_distinct_original_product_names(self) -> list[str]:
+        if self.inputSheet is None:
+            raise Exception("ExcelWorker: Input file is not opened")
+
+        max_row = self.getNumberOfRows() + 1
+        unique_names: list[str] = []
+        seen_names: set[str] = set()
+        for row in self.inputSheet.iter_rows(min_row=1 + NUMBER_OF_ROWS_TO_SKIP_FROM_INPUT_SHEET, max_row=max_row, max_col=4):
+            original_product_name, _ = self._generateProductNameVariations(row[1].value)
+            if original_product_name not in seen_names:
+                seen_names.add(original_product_name)
+                unique_names.append(original_product_name)
+
+        return unique_names
 
     def _writeBoughtProducts(self):
         if self.outputSheet is None:

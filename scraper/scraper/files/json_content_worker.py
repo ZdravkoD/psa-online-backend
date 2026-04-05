@@ -71,3 +71,15 @@ class JsonContentWorker(FileWorker):
 
     def get_progress(self) -> WorkerProgress:
         return WorkerProgress(self.original_product_name, self.current_row, self.total_rows)
+
+    def get_distinct_original_product_names(self) -> list[str]:
+        if self.json_data is None:
+            raise ValueError("The JSON content is not loaded")
+
+        unique_names: list[str] = []
+        for row in self.json_data["rows"]:
+            original_product_name, _ = self._generateProductNameVariations(row.get("product_name"))
+            if original_product_name not in unique_names:
+                unique_names.append(original_product_name)
+
+        return unique_names

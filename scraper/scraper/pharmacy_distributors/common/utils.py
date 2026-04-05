@@ -1,4 +1,5 @@
 import logging
+import os
 from threading import Lock
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -45,5 +46,8 @@ def get_browser_options() -> Options:
     options.add_argument("--disable-dev-shm-usage")  # Overcome limited resource problems
     options.add_argument("--disable-gpu")  # Applicable to Windows environments
     options.add_argument("--disable-software-rasterizer")
+
+    if str(os.getenv("CHROME_ENABLE_PERFORMANCE_LOGS", "")).lower() in {"1", "true", "yes"}:
+        options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
 
     return options

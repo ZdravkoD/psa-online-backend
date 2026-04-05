@@ -63,6 +63,9 @@ class FileWorker:
     def get_progress(self) -> WorkerProgress:
         raise NotImplementedError("Subclasses must implement this method")
 
+    def get_distinct_original_product_names(self) -> List[str]:
+        raise NotImplementedError("Subclasses must implement this method")
+
     def _generateProductNameVariations(self, productName: str):
         result = []
         # точката (гр.|мг. и т.н.) се заменя с интервал

@@ -39,6 +39,8 @@ def _build_parser() -> argparse.ArgumentParser:
     login_parser = subparsers.add_parser("phoenix-login", help="Start Phoenix browser, login, and optionally open order flow.")
     login_parser.add_argument("--pharmacy-id", required=True)
     login_parser.add_argument("--skip-prepare", action="store_true", help="Stop after login.")
+    login_parser.add_argument("--capture-network", action="store_true", help="Enable Chrome performance logs and print Phoenix network activity.")
+    login_parser.add_argument("--network-output-file", type=Path, help="Optional JSON file path for captured network events.")
 
     sting_login_parser = subparsers.add_parser("sting-login", help="Start Sting browser, login, and optionally open order flow.")
     sting_login_parser.add_argument("--pharmacy-id", required=True)
@@ -66,6 +68,8 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["start_over", "resume"],
         default="start_over",
     )
+    task_parser.add_argument("--capture-network", action="store_true", help="Enable Chrome performance logs and print Phoenix network activity after the task.")
+    task_parser.add_argument("--network-output-file", type=Path, help="Optional JSON file path for captured network events.")
     return parser
 
 
@@ -112,6 +116,12 @@ def _run_phoenix_login(args: argparse.Namespace, modules: dict[str, Any]) -> int
         if not args.skip_prepare:
             scraper.prepare_for_order()
         print(scraper.format_debug_context())
+        if args.capture_network:
+            _dump_network_activity(
+                scraper=scraper,
+                output_path=args.network_output_file,
+                scraper_name="Phoenix",
+            )
         return 0
     finally:
         try:
@@ -230,7 +240,93 @@ def _run_task(args: argparse.Namespace, modules: dict[str, Any]) -> int:
     task_item = modules["ScraperTaskItem"].from_dict(payload)
     handler = task_handler_module.TaskHandler(task_item)
     handler.handle_task()
+    if args.capture_network:
+        for scraper in handler.scrapers:
+            if getattr(scraper, "get_name", lambda: "")() == "Phoenix":
+                _dump_network_activity(
+                    scraper=scraper,
+                    output_path=args.network_output_file,
+                    scraper_name="Phoenix",
+                )
     return 0
+
+
+def _decode_performance_log_entries(entries: list[dict[str, Any]], *, url_contains: str) -> list[dict[str, Any]]:
+    events_by_request_id: dict[str, dict[str, Any]] = {}
+    filtered_events: list[dict[str, Any]] = []
+
+    for entry in entries:
+        message = entry.get("message")
+        if not message:
+            continue
+        try:
+            payload = json.loads(message)["message"]
+        except Exception:
+            continue
+
+        method = payload.get("method")
+        params = payload.get("params", {})
+        request_id = params.get("requestId")
+
+        if method == "Network.requestWillBeSent":
+            request = params.get("request", {})
+            url = request.get("url", "")
+            if url_contains not in url:
+                continue
+            event = {
+                "requestId": request_id,
+                "type": "request",
+                "url": url,
+                "httpMethod": request.get("method"),
+                "postData": request.get("postData"),
+                "resourceType": params.get("type"),
+                "initiator": params.get("initiator"),
+            }
+            events_by_request_id[request_id] = event
+            filtered_events.append(event)
+        elif method == "Network.responseReceived":
+            response = params.get("response", {})
+            url = response.get("url", "")
+            if url_contains not in url:
+                continue
+            request_event = events_by_request_id.get(request_id, {})
+            event = {
+                "requestId": request_id,
+                "type": "response",
+                "url": url,
+                "status": response.get("status"),
+                "mimeType": response.get("mimeType"),
+                "resourceType": params.get("type"),
+                "requestMethod": request_event.get("httpMethod"),
+            }
+            filtered_events.append(event)
+        elif method == "Network.loadingFailed":
+            if request_id not in events_by_request_id:
+                continue
+            event = {
+                "requestId": request_id,
+                "type": "loadingFailed",
+                "url": events_by_request_id[request_id].get("url"),
+                "errorText": params.get("errorText"),
+                "canceled": params.get("canceled"),
+            }
+            filtered_events.append(event)
+
+    return filtered_events
+
+
+def _dump_network_activity(scraper: Any, output_path: Path | None, scraper_name: str) -> None:
+    entries = scraper.get_performance_logs()
+    network_events = _decode_performance_log_entries(entries, url_contains="phoenixpharma.bg")
+    if output_path is not None:
+        output_path.write_text(json.dumps(network_events, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"Wrote {len(network_events)} {scraper_name} network events to {output_path}")
+        return
+
+    print(json.dumps({
+        "scraper": scraper_name,
+        "network_events": network_events,
+    }, ensure_ascii=False, indent=2))
 
 
 def main() -> int:
@@ -239,6 +335,8 @@ def main() -> int:
 
     if args.distributor_config_file:
         _load_distributor_config(args.distributor_config_file)
+    if getattr(args, "capture_network", False):
+        os.environ["CHROME_ENABLE_PERFORMANCE_LOGS"] = "1"
 
     modules = _import_scraper_modules()
 
