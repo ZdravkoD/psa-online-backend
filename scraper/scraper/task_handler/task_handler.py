@@ -115,23 +115,25 @@ class TaskReport:
 
 class TaskHandler:
     def __init__(self, taskItem: ScraperTaskItem):
+        self.taskItem = taskItem
+        self.task_update_publisher: TaskUpdatePublisher | None = None
+        self.scrapers: List[BrowserCommon] = []
+        self.bought_products: List[BoughtProductInfo] = []
+        self.unbought_products: List[UnboughtProductInfo] = []
         try:
-            self.taskItem = taskItem
             self.file_worker: FileWorker = FileWorkerFactory(
                 taskItem.file_type).get_file_worker()
             self.task_update_publisher = TaskUpdatePublisher()
             self.scrapers = self._get_scrapers()
-            self.bought_products: List[BoughtProductInfo] = []
-            self.unbought_products: List[UnboughtProductInfo] = []
         except Exception as e:
-            logger.error(
-                "TaskHandler: Couldn't initialize the task handler: ", e)
-            self.task_update_publisher.publish_error(
-                taskItem=self.taskItem,
-                message="Couldn't initialize the task handler",
-                detailed_error_message=str(e),
-                progress=0)
-            raise e
+            logger.exception("TaskHandler: Couldn't initialize the task handler: %s", e)
+            if self.task_update_publisher is not None:
+                self.task_update_publisher.publish_error(
+                    taskItem=self.taskItem,
+                    message="Couldn't initialize the task handler",
+                    detailed_error_message=str(e),
+                    progress=0)
+            raise
 
     def handle_task(self):
         logger.info(f"Handling task: {self.taskItem.to_json()}")
