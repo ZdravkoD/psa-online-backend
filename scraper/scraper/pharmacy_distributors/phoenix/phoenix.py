@@ -54,6 +54,7 @@ class PhoenixPharma(BrowserCommon):
         self.lastSearchWasEmpty = True
 
     def login(self):
+        self.remember_action("Opening Phoenix login page")
         self.browser.get(self.DUMMY_PAGE)
         self.browser.add_cookie({'name': 'cookiesAsked', 'value': 'true'})
         self.browser.add_cookie({'name': 'cookiesAllowedMarketing', 'value': 'false'})
@@ -61,25 +62,32 @@ class PhoenixPharma(BrowserCommon):
         self.browser.get(self.LOGIN_PAGE)
 
         self.store_temporary_screenshot()
+        self.remember_action(f"Entering Phoenix username for pharmacy {self.username}")
         self.browser.find_element(By.CSS_SELECTOR, "input[name='loginUsername']").send_keys(self.username)
         self.browser.find_element(By.CSS_SELECTOR, "input[name='loginPasswordText']").click()
         self.browser.find_element(By.CSS_SELECTOR, "input[name='loginPasswordText']").send_keys(self.password)
         self.store_temporary_screenshot()
+        self.remember_action("Submitting Phoenix login form")
         self.browser.find_element(By.CSS_SELECTOR, "input[name='loginPasswordText']").send_keys(Keys.RETURN)
 
     def prepare_for_order(self):
+        self.remember_action("Opening Phoenix order menu")
         WebDriverWait(self.browser, 2).until(EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Поръчка')]"))).click()
         self.store_temporary_screenshot()
+        self.remember_action("Starting Phoenix free order")
         self.browser.find_element(By.XPATH, "//span[contains(text(), 'Нова поръчка свободна')]").click()
 
+        self.remember_action(f"Selecting Phoenix client with pharmacy ID {self.pharmacyID}")
         self.browser.find_element(By.CSS_SELECTOR, "input[name='order_partner_id']").send_keys(self.pharmacyID)
         try:
             element = WebDriverWait(self.browser, 5)\
                 .until(EC.element_to_be_clickable((By.XPATH, "//div[contains(@class, 'x-grid-cell-inner') and text() = '" + self.pharmacyID + "']")))
             element.click()
-        except Exception:
-            logger.debug("PhoenixPharma:prepare_for_order(): Couldn't find the pharmacy with ID " + self.pharmacyID)
-            pass
+        except Exception as exc:
+            logger.error("PhoenixPharma:prepare_for_order(): Couldn't find the pharmacy with ID %s", self.pharmacyID)
+            raise ValueError(
+                f"Phoenix client with pharmacy ID '{self.pharmacyID}' was not found or could not be selected."
+            ) from exc
 
     def _hide_spellcheck(self):
         self.store_temporary_screenshot()
