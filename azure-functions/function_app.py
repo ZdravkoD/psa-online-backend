@@ -12,6 +12,7 @@ import jwt
 from pubsub_client import AzureWebPubSubServiceClient
 from werkzeug.utils import secure_filename
 
+from api_utils import build_blob_object_name, parse_int_param, parse_json_param
 from cosmosdb_client import CosmosDbClient
 from messaging import FileType, ScraperTaskActionType, ScraperTaskItem, ScraperTaskItemStatus, TaskStatus
 from json_encoder import CustomJSONEncoder
@@ -335,7 +336,7 @@ def upload_file_bytes_to_blob_storage(filename: str, file_data: bytes):
     logger.info(f"container_name {container_name}")
     blob_service_client = BlobServiceClient.from_connection_string(connection_string)
     container_client: ContainerClient = blob_service_client.get_container_client(container_name)
-    blob_client: BlobClient = container_client.get_blob_client(filename)
+    blob_client: BlobClient = container_client.get_blob_client(build_blob_object_name(filename))
     blob_client.upload_blob(file_data, overwrite=True)
     return blob_client.url
 
@@ -585,22 +586,3 @@ def servicebus_trigger__task_updates(msg: func.ServiceBusMessage):
 
     AzureWebPubSubServiceClient().send_task_update_to_all(msg_dict)
 
-
-def parse_json_param(param_value: Optional[str], param_name: str) -> Optional[dict]:
-    """Helper function to parse a JSON string parameter."""
-    if not param_value or param_value.strip() == "":
-        return None
-    try:
-        return json.loads(param_value)
-    except json.JSONDecodeError:
-        raise ValueError(f"Invalid JSON in {param_name} parameter")
-
-
-def parse_int_param(param_value: Optional[str], param_name: str) -> Optional[int]:
-    """Helper function to parse an integer parameter."""
-    if not param_value or param_value.strip() == "":
-        return None
-    try:
-        return int(param_value)
-    except ValueError:
-        raise ValueError(f"Invalid integer in {param_name} parameter")
