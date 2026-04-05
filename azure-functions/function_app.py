@@ -12,7 +12,13 @@ import jwt
 from pubsub_client import AzureWebPubSubServiceClient
 from werkzeug.utils import secure_filename
 
-from api_utils import build_blob_object_name, parse_int_param, parse_json_param
+from api_utils import (
+    build_blob_object_name,
+    parse_distributors_param,
+    parse_int_param,
+    parse_json_param,
+    validate_object_id_param,
+)
 from cosmosdb_client import CosmosDbClient
 from messaging import FileType, ScraperTaskActionType, ScraperTaskItem, ScraperTaskItemStatus, TaskStatus
 from json_encoder import CustomJSONEncoder
@@ -105,10 +111,11 @@ def _create_task_json_content(req: func.HttpRequest) -> func.HttpResponse:
             "Please provide the pharmacy_id in the request body.",
             status_code=400
         )
-    distributors = json.loads(str(req.form.get('distributors')))
-    if not distributors:
+    try:
+        distributors = parse_distributors_param(req.form.get('distributors'))
+    except ValueError as err:
         return func.HttpResponse(
-            "Please provide the distributors in the request body.",
+            str(err),
             status_code=400
         )
     if not all(distributor in ["sting", "phoenix"] for distributor in distributors):
@@ -194,10 +201,11 @@ def _create_task_file_content(req: func.HttpRequest) -> func.HttpResponse:
             "Please provide the pharmacy_id in the request body.",
             status_code=400
         )
-    distributors = json.loads(str(req.form.get('distributors')))
-    if not distributors:
+    try:
+        distributors = parse_distributors_param(req.form.get('distributors'))
+    except ValueError as err:
         return func.HttpResponse(
-            "Please provide the distributors in the request body.",
+            str(err),
             status_code=400
         )
     if not all(distributor in ["sting", "phoenix"] for distributor in distributors):
@@ -252,10 +260,11 @@ def _create_task_file_content(req: func.HttpRequest) -> func.HttpResponse:
 def task(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request to get a task.')
 
-    task_id = req.route_params.get('taskId')
-    if not task_id:
+    try:
+        task_id = validate_object_id_param(req.route_params.get('taskId'), "task ID in the URI")
+    except ValueError as err:
         return func.HttpResponse(
-            "Please provide the task ID in the URI.",
+            str(err),
             status_code=400
         )
 
@@ -487,10 +496,11 @@ def _product_names_parse_params(req: func.HttpRequest) -> Tuple[Optional[dict], 
 def get_product(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request to get a product name.')
 
-    product_id = req.route_params.get('id')
-    if not product_id:
+    try:
+        product_id = validate_object_id_param(req.route_params.get('id'), "product ID in the URI")
+    except ValueError as err:
         return func.HttpResponse(
-            "Please provide the product ID in the URI.",
+            str(err),
             status_code=400
         )
 
@@ -518,10 +528,11 @@ def update_product_name(req: func.HttpRequest) -> func.HttpResponse:
             status_code=400
         )
 
-    product_id = req.route_params.get('id')
-    if not product_id:
+    try:
+        product_id = validate_object_id_param(req.route_params.get('id'), "product ID in the URI")
+    except ValueError as err:
         return func.HttpResponse(
-            "Please provide the product ID in the request body.",
+            str(err),
             status_code=400
         )
 

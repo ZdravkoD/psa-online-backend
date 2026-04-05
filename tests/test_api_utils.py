@@ -49,5 +49,22 @@ class SecretRedactionTests(unittest.TestCase):
         self.assertNotIn("topsecret", str(user))
 
 
+class RequestValidationTests(unittest.TestCase):
+    def test_parse_distributors_accepts_json_string_array(self):
+        self.assertEqual(api_utils.parse_distributors_param('["sting", "phoenix"]'), ["sting", "phoenix"])
+
+    def test_parse_distributors_rejects_non_array_payload(self):
+        with self.assertRaisesRegex(ValueError, "JSON array of strings"):
+            api_utils.parse_distributors_param('{"name": "sting"}')
+
+    def test_validate_object_id_accepts_24_char_hex(self):
+        object_id = "0123456789abcdef01234567"
+        self.assertEqual(api_utils.validate_object_id_param(object_id, "task ID"), object_id)
+
+    def test_validate_object_id_rejects_invalid_value(self):
+        with self.assertRaisesRegex(ValueError, "Invalid task ID"):
+            api_utils.validate_object_id_param("bad-id", "task ID")
+
+
 if __name__ == "__main__":
     unittest.main()
