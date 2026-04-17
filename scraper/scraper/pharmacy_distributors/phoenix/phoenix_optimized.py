@@ -400,6 +400,109 @@ class PhoenixPharmaOptimized(PhoenixPharma):
             return [rows]
         return []
 
+    def _to_int(self, value: Any) -> int:
+        text_value = self._xml_safe(value).strip()
+        if text_value == "":
+            return 0
+        return int(float(text_value))
+
+    def _get_order_item_key(self, row: dict[str, Any]) -> str | None:
+        article_id = self._xml_safe(row.get("article_id")).strip()
+        if article_id != "":
+            return f"article_id:{article_id}"
+
+        cyr_name = self._xml_safe(row.get("CyrName")).strip()
+        if cyr_name != "":
+            return f"name:{cyr_name}"
+
+        article_number = self._xml_safe(row.get("article_number")).strip()
+        if article_number != "":
+            return f"article_number:{article_number}"
+
+        return None
+
+    def _snapshot_order_state(self) -> dict[str, Any]:
+        quantity_by_key: dict[str, int] = {}
+        total_quantity = 0
+
+        for row in self._order_item_rows:
+            quantity = self._to_int(row.get("quantity", "0"))
+            total_quantity += quantity
+
+            item_key = self._get_order_item_key(row)
+            if item_key is None:
+                continue
+
+            quantity_by_key[item_key] = quantity_by_key.get(item_key, 0) + quantity
+
+        return {
+            "row_count": len(self._order_item_rows),
+            "total_quantity": total_quantity,
+            "quantity_by_key": quantity_by_key,
+        }
+
+    def _order_snapshot_matches(self, expected_snapshot: dict[str, Any]) -> bool:
+        return self._snapshot_order_state() == expected_snapshot
+
+    def _order_addition_applied(self, previous_snapshot: dict[str, Any], article_row: dict[str, Any], quantity: int) -> bool:
+        current_snapshot = self._snapshot_order_state()
+        if current_snapshot["total_quantity"] < previous_snapshot["total_quantity"] + quantity:
+            return False
+
+        item_key = self._get_order_item_key(article_row)
+        if item_key is None:
+            return current_snapshot["row_count"] >= previous_snapshot["row_count"] + 1
+
+        previous_quantity = previous_snapshot["quantity_by_key"].get(item_key, 0)
+        current_quantity = current_snapshot["quantity_by_key"].get(item_key, 0)
+        return current_quantity >= previous_quantity + quantity
+
+    def _reload_order_state(self) -> dict[str, Any]:
+        if self._current_order_row is None:
+            raise RuntimeError("PhoenixPharma: Order state is not initialized before reload")
+
+        order_id = self._xml_safe(self._current_order_row.get("order_id")).strip()
+        if order_id == "":
+            raise RuntimeError("PhoenixPharma: Order ID is missing before reload")
+
+        last_error: Exception | None = None
+        queries = [
+            f"order_id={quote(order_id)}",
+            f"filter_order_id={quote(order_id)}&page=1&start=0&limit=1",
+        ]
+
+        for query in queries:
+            try:
+                response = self._request("GET", "dataset/order/load.php", query=query)
+                dataset = self._parse_xml_dataset(response.text)
+                rows = dataset.get("row")
+                order_row: dict[str, Any] | None = None
+
+                if isinstance(rows, dict):
+                    order_row = rows
+                elif isinstance(rows, list):
+                    for candidate_row in rows:
+                        if not isinstance(candidate_row, dict):
+                            continue
+                        if self._xml_safe(candidate_row.get("order_id")).strip() == order_id:
+                            order_row = candidate_row
+                            break
+                    if order_row is None and len(rows) == 1 and isinstance(rows[0], dict):
+                        order_row = rows[0]
+
+                if isinstance(order_row, dict):
+                    self._current_order_row = order_row
+                    self._order_item_rows = self._decode_order_item_rows(order_row.get("xml_item_list"))
+                    return order_row
+
+                last_error = ValueError(f"PhoenixPharma: Order '{order_id}' was not found during reload")
+            except Exception as exc:
+                last_error = exc
+
+        if last_error is not None:
+            raise last_error
+        raise ValueError(f"PhoenixPharma: Order '{order_id}' was not found during reload")
+
     def _build_commit_payload(self, order_row: dict[str, Any], items: list[dict[str, Any]]) -> bytes:
         total_quantity = sum(int(self._xml_safe(item.get("quantity", "0")) or "0") for item in items)
         total_base_price = sum(float(self._xml_safe(item.get("BasePrice", "0")) or "0") * int(self._xml_safe(item.get("quantity", "0")) or "0") for item in items)
@@ -504,6 +607,7 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         logger.info("PhoenixPharmaOptimized: Adding product to cart via API: %s, quantity: %s", product_name, quantity)
 
         self._ensure_order_initialized()
+        previous_snapshot = self._snapshot_order_state()
         article_row = self._article_rows_by_name.get(product_name)
         if article_row is None:
             article_row, _ = self._search_for_product_optimized(product_name)
@@ -513,16 +617,33 @@ class PhoenixPharmaOptimized(PhoenixPharma):
 
         new_item = self._build_order_item_row(article_row, quantity, len(self._order_item_rows) + 1)
         items = list(self._order_item_rows) + [new_item]
+
         try:
             self._commit_order_items(items)
-            return True
-        except Exception as exc:
-            logger.error("PhoenixPharma: Direct API add-to-cart failed, falling back to UI flow: %s", exc)
-            try:
-                self.refresh_page()
-                self._search_for_product(product_name)
-                self._add_product_to_cart_optimized(quantity)
+            if self._order_addition_applied(previous_snapshot, article_row, quantity):
                 return True
-            except Exception as fallback_exc:
-                logger.error("PhoenixPharma: Fallback UI add-to-cart failed: %s", fallback_exc)
-                raise
+        except Exception as exc:
+            logger.error("PhoenixPharma: Direct API add-to-cart attempt failed before confirmation: %s", exc)
+
+        self._reload_order_state()
+        if self._order_addition_applied(previous_snapshot, article_row, quantity):
+            return True
+
+        if not self._order_snapshot_matches(previous_snapshot):
+            raise RuntimeError(
+                "PhoenixPharma: API item commit changed the order unexpectedly and the requested quantity was not confirmed"
+            )
+
+        logger.error("PhoenixPharma: Direct API add-to-cart was not confirmed, falling back to UI flow")
+        try:
+            self.refresh_page()
+            if self._search_for_product(product_name) is None:
+                raise ValueError(f"PhoenixPharma: UI fallback could not find product '{product_name}'")
+            PhoenixPharma.add_product_to_cart(self, quantity)
+            self._reload_order_state()
+            if self._order_addition_applied(previous_snapshot, article_row, quantity):
+                return True
+            raise RuntimeError("PhoenixPharma: UI fallback did not change the order as expected")
+        except Exception as fallback_exc:
+            logger.error("PhoenixPharma: Fallback UI add-to-cart failed: %s", fallback_exc)
+            raise
