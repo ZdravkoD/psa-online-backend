@@ -11,6 +11,7 @@ from xml.sax.saxutils import escape
 import requests
 import xmltodict
 from pharmacy_distributors.common.models import ScrapedProductInfo
+from selenium.webdriver.common.by import By
 
 from pharmacy_distributors.phoenix.phoenix import PhoenixPharma
 
@@ -546,6 +547,97 @@ class PhoenixPharmaOptimized(PhoenixPharma):
             )
         return False
 
+    def _xpath_literal(self, value: str) -> str:
+        if "'" not in value:
+            return f"'{value}'"
+        if '"' not in value:
+            return f'"{value}"'
+
+        parts = value.split("'")
+        quoted_parts: list[str] = []
+        for index, part in enumerate(parts):
+            quoted_parts.append(f"'{part}'")
+            if index != len(parts) - 1:
+                quoted_parts.append("\"'\"")
+        return "concat(" + ", ".join(quoted_parts) + ")"
+
+    def _get_expected_previous_quantity(self, previous_snapshot: dict[str, Any], article_row: dict[str, Any]) -> int:
+        possible_keys = []
+
+        article_id = self._xml_safe(article_row.get("article_id")).strip()
+        if article_id != "":
+            possible_keys.append(f"article_id:{article_id}")
+
+        product_name = self._xml_safe(article_row.get("CyrName")).strip()
+        if product_name != "":
+            possible_keys.append(f"name:{product_name}")
+
+        article_number = self._xml_safe(article_row.get("article_number")).strip()
+        if article_number != "":
+            possible_keys.append(f"article_number:{article_number}")
+
+        quantity_by_key = previous_snapshot.get("quantity_by_key", {})
+        return max((int(quantity_by_key.get(key, 0)) for key in possible_keys), default=0)
+
+    def _get_ui_order_quantity(self, product_name: str) -> int | None:
+        product_name = product_name.strip()
+        if product_name == "":
+            return None
+
+        row_xpath = (
+            "//table[contains(@class, 'x-grid-item')]"
+            "[.//td[contains(@class, 'x-grid-cell')]"
+            f"//div[contains(@class, 'x-grid-cell-inner') and contains(normalize-space(.), {self._xpath_literal(product_name)})]]"
+        )
+        quantity_input_xpath = row_xpath + "//input[@role='spinbutton']"
+        quantity_inputs = self.browser.find_elements(By.XPATH, quantity_input_xpath)
+        for quantity_input in quantity_inputs:
+            raw_value = quantity_input.get_attribute("aria-valuenow") or quantity_input.get_attribute("value")
+            if raw_value is None or str(raw_value).strip() == "":
+                continue
+            try:
+                return int(float(str(raw_value).strip()))
+            except ValueError:
+                continue
+        return None
+
+    def _ui_order_addition_applied(self, previous_snapshot: dict[str, Any], article_row: dict[str, Any], quantity: int) -> bool:
+        product_name = self._xml_safe(article_row.get("CyrName")).strip()
+        current_quantity = self._get_ui_order_quantity(product_name)
+        if current_quantity is None:
+            return False
+
+        previous_quantity = self._get_expected_previous_quantity(previous_snapshot, article_row)
+        return current_quantity >= previous_quantity + quantity
+
+    def _wait_for_ui_order_addition_confirmation(
+        self,
+        previous_snapshot: dict[str, Any],
+        article_row: dict[str, Any],
+        quantity: int,
+        *,
+        source: str,
+    ) -> bool:
+        if self._ui_order_addition_applied(previous_snapshot, article_row, quantity):
+            return True
+
+        for attempt in range(1, self.ORDER_CONFIRMATION_RELOAD_ATTEMPTS + 1):
+            delay_seconds = self.ORDER_CONFIRMATION_RELOAD_DELAY_SECONDS
+            if delay_seconds > 0:
+                time.sleep(delay_seconds)
+
+            self._wait_until_mask_is_gone(timeout=5)
+            if self._ui_order_addition_applied(previous_snapshot, article_row, quantity):
+                return True
+
+        logger.warning(
+            "PhoenixPharma: %s UI confirmation exhausted %s attempts for product '%s'",
+            source,
+            self.ORDER_CONFIRMATION_RELOAD_ATTEMPTS,
+            self._xml_safe(article_row.get("CyrName")).strip(),
+        )
+        return False
+
     def _build_commit_payload(self, order_row: dict[str, Any], items: list[dict[str, Any]]) -> bytes:
         total_quantity = sum(int(self._xml_safe(item.get("quantity", "0")) or "0") for item in items)
         total_base_price = sum(float(self._xml_safe(item.get("BasePrice", "0")) or "0") * int(self._xml_safe(item.get("quantity", "0")) or "0") for item in items)
@@ -668,6 +760,10 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         if self._wait_for_order_addition_confirmation(previous_snapshot, article_row, quantity, source="API"):
             return True
 
+        self.refresh_page()
+        if self._wait_for_ui_order_addition_confirmation(previous_snapshot, article_row, quantity, source="Post-API refresh"):
+            return True
+
         if not self._order_snapshot_matches(previous_snapshot):
             raise RuntimeError(
                 "PhoenixPharma: API item commit changed the order unexpectedly and the requested quantity was not confirmed"
@@ -675,11 +771,10 @@ class PhoenixPharmaOptimized(PhoenixPharma):
 
         logger.error("PhoenixPharma: Direct API add-to-cart was not confirmed, falling back to UI flow")
         try:
-            self.refresh_page()
             if self._search_for_product(product_name) is None:
                 raise ValueError(f"PhoenixPharma: UI fallback could not find product '{product_name}'")
             PhoenixPharma.add_product_to_cart(self, quantity)
-            if self._wait_for_order_addition_confirmation(previous_snapshot, article_row, quantity, source="UI fallback"):
+            if self._wait_for_ui_order_addition_confirmation(previous_snapshot, article_row, quantity, source="UI fallback"):
                 return True
             raise RuntimeError("PhoenixPharma: UI fallback did not change the order as expected")
         except Exception as fallback_exc:

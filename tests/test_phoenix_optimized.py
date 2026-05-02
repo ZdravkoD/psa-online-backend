@@ -202,6 +202,29 @@ class PhoenixOptimizedPayloadTests(unittest.TestCase):
         phoenix.refresh_page.assert_not_called()
         ui_add_mock.assert_not_called()
 
+    def test_ui_order_addition_applied_reads_quantity_from_dom(self):
+        phoenix = phoenix_optimized_module.PhoenixPharmaOptimized.__new__(phoenix_optimized_module.PhoenixPharmaOptimized)
+        phoenix.browser = mock.Mock()
+        quantity_input = mock.Mock()
+        quantity_input.get_attribute.side_effect = lambda attr: {"aria-valuenow": "2", "value": ""}.get(attr)
+        phoenix.browser.find_elements.return_value = [quantity_input]
+
+        previous_snapshot = {"quantity_by_key": {}, "row_count": 0, "total_quantity": 0}
+        article_row = {
+            "article_id": "5344",
+            "article_number": "237305",
+            "CyrName": "TARGET",
+        }
+
+        result = phoenix_optimized_module.PhoenixPharmaOptimized._ui_order_addition_applied(
+            phoenix,
+            previous_snapshot,
+            article_row,
+            2,
+        )
+
+        self.assertTrue(result)
+
     def test_add_product_to_cart_reloads_order_when_commit_response_drops_existing_items(self):
         phoenix = phoenix_optimized_module.PhoenixPharmaOptimized.__new__(phoenix_optimized_module.PhoenixPharmaOptimized)
         phoenix.remember_action = lambda *_args, **_kwargs: None
@@ -330,6 +353,7 @@ class PhoenixOptimizedPayloadTests(unittest.TestCase):
             return phoenix._current_order_row
 
         phoenix._reload_order_state = mock.Mock(side_effect=fake_reload)
+        phoenix._wait_for_ui_order_addition_confirmation = mock.Mock(side_effect=[False, True])
 
         with mock.patch.object(phoenix_optimized_module.PhoenixPharma, "add_product_to_cart", autospec=True, return_value=True) as ui_add_mock:
             result = phoenix_optimized_module.PhoenixPharmaOptimized.add_product_to_cart(phoenix, "TARGET", 2)
@@ -337,7 +361,7 @@ class PhoenixOptimizedPayloadTests(unittest.TestCase):
         self.assertTrue(result)
         phoenix.refresh_page.assert_called_once()
         phoenix._search_for_product.assert_called_once_with("TARGET")
-        self.assertEqual(phoenix._reload_order_state.call_count, 4)
+        self.assertEqual(phoenix._reload_order_state.call_count, 2)
         ui_add_mock.assert_called_once_with(phoenix, 2)
 
     def test_add_product_to_cart_raises_when_api_attempt_changes_order_ambiguously(self):
@@ -383,6 +407,7 @@ class PhoenixOptimizedPayloadTests(unittest.TestCase):
         phoenix._commit_order_items = lambda _items: None
         phoenix.refresh_page = mock.Mock()
         phoenix._search_for_product = mock.Mock(return_value=object())
+        phoenix._wait_for_ui_order_addition_confirmation = mock.Mock(return_value=False)
         phoenix._reload_order_state = mock.Mock(
             side_effect=lambda: (
                 setattr(
@@ -400,7 +425,8 @@ class PhoenixOptimizedPayloadTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "changed the order unexpectedly"):
             phoenix_optimized_module.PhoenixPharmaOptimized.add_product_to_cart(phoenix, "TARGET", 2)
 
-        phoenix.refresh_page.assert_not_called()
+        phoenix.refresh_page.assert_called_once()
+        phoenix._search_for_product.assert_not_called()
 
 
 if __name__ == "__main__":
