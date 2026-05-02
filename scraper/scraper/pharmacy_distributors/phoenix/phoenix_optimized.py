@@ -25,6 +25,8 @@ class PhoenixPharmaOptimized(PhoenixPharma):
     REQUEST_TIMEOUT_SECONDS = 30
     ORDER_CONFIRMATION_RELOAD_ATTEMPTS = 3
     ORDER_CONFIRMATION_RELOAD_DELAY_SECONDS = 1.0
+    UI_ORDER_CONFIRMATION_ATTEMPTS = 10
+    UI_ORDER_CONFIRMATION_DELAY_SECONDS = 0.2
 
     def __init__(self, pharmacyID: str, shouldInitBrowser=True):
         super().__init__(pharmacyID, shouldInitBrowser)
@@ -34,6 +36,7 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         self._current_order_row: dict[str, Any] | None = None
         self._order_item_rows: list[dict[str, Any]] = []
         self._article_rows_by_name: dict[str, dict[str, Any]] = {}
+        self._ui_order_page_loaded = False
 
     def prepare_for_order(self):
         self.remember_action("Preparing Phoenix order via API")
@@ -185,6 +188,7 @@ class PhoenixPharmaOptimized(PhoenixPharma):
 
         self._current_order_row = row
         self._order_item_rows = self._decode_order_item_rows(row.get("xml_item_list"))
+        self._ui_order_page_loaded = False
         return row
 
     def _get_json_result_of_search(self, product_name: str):
@@ -579,16 +583,19 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         quantity_by_key = previous_snapshot.get("quantity_by_key", {})
         return max((int(quantity_by_key.get(key, 0)) for key in possible_keys), default=0)
 
+    def _get_order_row_xpath(self, product_name: str) -> str:
+        return (
+            "//table[contains(@class, 'x-grid-item')]"
+            "[.//div[contains(@class, 'x-action-col-icon') and contains(@class, 'fa-trash')]"
+            f" and .//div[contains(@class, 'x-grid-cell-inner') and contains(normalize-space(.), {self._xpath_literal(product_name)})]]"
+        )
+
     def _get_ui_order_quantity(self, product_name: str) -> int | None:
         product_name = product_name.strip()
         if product_name == "":
             return None
 
-        row_xpath = (
-            "//table[contains(@class, 'x-grid-item')]"
-            "[.//td[contains(@class, 'x-grid-cell')]"
-            f"//div[contains(@class, 'x-grid-cell-inner') and contains(normalize-space(.), {self._xpath_literal(product_name)})]]"
-        )
+        row_xpath = self._get_order_row_xpath(product_name)
         quantity_input_xpath = row_xpath + "//input[@role='spinbutton']"
         quantity_inputs = self.browser.find_elements(By.XPATH, quantity_input_xpath)
         for quantity_input in quantity_inputs:
@@ -621,22 +628,31 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         if self._ui_order_addition_applied(previous_snapshot, article_row, quantity):
             return True
 
-        for attempt in range(1, self.ORDER_CONFIRMATION_RELOAD_ATTEMPTS + 1):
-            delay_seconds = self.ORDER_CONFIRMATION_RELOAD_DELAY_SECONDS
+        for attempt in range(1, self.UI_ORDER_CONFIRMATION_ATTEMPTS + 1):
+            delay_seconds = self.UI_ORDER_CONFIRMATION_DELAY_SECONDS
             if delay_seconds > 0:
                 time.sleep(delay_seconds)
 
-            self._wait_until_mask_is_gone(timeout=5)
             if self._ui_order_addition_applied(previous_snapshot, article_row, quantity):
                 return True
 
         logger.warning(
             "PhoenixPharma: %s UI confirmation exhausted %s attempts for product '%s'",
             source,
-            self.ORDER_CONFIRMATION_RELOAD_ATTEMPTS,
+            self.UI_ORDER_CONFIRMATION_ATTEMPTS,
             self._xml_safe(article_row.get("CyrName")).strip(),
         )
         return False
+
+    def _increase_existing_order_row_quantity(self, product_name: str, quantity: int):
+        row_xpath = self._get_order_row_xpath(product_name)
+        plus_button_xpath = row_xpath + "//a[contains(@class, 'bgnf-button-plus')]"
+        plus_button = self.browser.find_element(By.XPATH, plus_button_xpath)
+        for _ in range(quantity):
+            plus_button.click()
+
+        self._wait_until_mask_is_gone(timeout=1)
+        return True
 
     def _build_commit_payload(self, order_row: dict[str, Any], items: list[dict[str, Any]]) -> bytes:
         total_quantity = sum(int(self._xml_safe(item.get("quantity", "0")) or "0") for item in items)
@@ -737,14 +753,65 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         self._current_order_row = row
         self._order_item_rows = self._decode_order_item_rows(row.get("xml_item_list"))
 
+    def _ensure_ui_order_page_loaded(self, *, force_reload: bool = False):
+        if force_reload or not self._ui_order_page_loaded:
+            self.refresh_page()
+            self._ui_order_page_loaded = True
+
+    def _add_product_to_cart_via_ui(self, quantity: int):
+        logger.info("PhoenixPharma:add_product_to_cart(): quantity=%s", quantity)
+        plus_button = self.browser.find_element(By.XPATH, self.PRODUCT_PLUS_BUTTON_XPATH)
+        for _ in range(quantity):
+            plus_button.click()
+
+        self.store_temporary_screenshot()
+        self.browser.find_element(By.XPATH, "//span[text()='Добави']").click()
+        self._wait_until_mask_is_gone(timeout=1)
+        return True
+
+    def _apply_ui_order_addition_locally(self, article_row: dict[str, Any], quantity: int):
+        item_key = self._get_order_item_key(article_row)
+        if item_key is None:
+            return
+
+        for existing_row in self._order_item_rows:
+            if self._get_order_item_key(existing_row) != item_key:
+                continue
+            existing_row["quantity"] = str(self._to_int(existing_row.get("quantity", "0")) + quantity)
+            return
+
+        self._order_item_rows.append(self._build_order_item_row(article_row, quantity, len(self._order_item_rows) + 1))
+
     def add_product_to_cart(self, product_name: str, quantity):
         self.remember_action(f"Adding product '{product_name}' to Phoenix cart with quantity {quantity} via UI")
         logger.info("PhoenixPharmaOptimized: Adding product to cart via UI: %s, quantity: %s", product_name, quantity)
 
         self._ensure_order_initialized()
-        self.refresh_page()
-        if self._search_for_product(product_name) is None:
-            raise ValueError(f"PhoenixPharma: UI add-to-cart could not find product '{product_name}'")
+        previous_snapshot = self._snapshot_order_state()
+        article_row = self._article_rows_by_name.get(product_name, {"CyrName": product_name})
+        previous_quantity = self._get_expected_previous_quantity(previous_snapshot, article_row)
 
-        PhoenixPharma.add_product_to_cart(self, quantity)
-        return True
+        self._ensure_ui_order_page_loaded()
+        if previous_quantity > 0:
+            self._increase_existing_order_row_quantity(product_name, quantity)
+        else:
+            if self._search_for_product(product_name) is None:
+                self._ensure_ui_order_page_loaded(force_reload=True)
+                if self._search_for_product(product_name) is None:
+                    raise ValueError(f"PhoenixPharma: UI add-to-cart could not find product '{product_name}'")
+
+            self._add_product_to_cart_via_ui(quantity)
+
+        if self._wait_for_ui_order_addition_confirmation(previous_snapshot, article_row, quantity, source="UI add-to-cart"):
+            self._apply_ui_order_addition_locally(article_row, quantity)
+            return True
+
+        self._ensure_ui_order_page_loaded(force_reload=True)
+        if self._wait_for_ui_order_addition_confirmation(previous_snapshot, article_row, quantity, source="UI add-to-cart after refresh"):
+            self._apply_ui_order_addition_locally(article_row, quantity)
+            return True
+
+        if self._wait_for_order_addition_confirmation(previous_snapshot, article_row, quantity, source="UI add-to-cart order reload"):
+            return True
+
+        raise ValueError("PhoenixPharma: UI add-to-cart did not change the order as expected")

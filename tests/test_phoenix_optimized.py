@@ -145,35 +145,98 @@ class PhoenixOptimizedPayloadTests(unittest.TestCase):
         phoenix = phoenix_optimized_module.PhoenixPharmaOptimized.__new__(phoenix_optimized_module.PhoenixPharmaOptimized)
         phoenix.remember_action = lambda *_args, **_kwargs: None
         phoenix._current_order_row = {"order_id": "15580946"}
+        phoenix._order_item_rows = []
+        phoenix._article_rows_by_name = {"TARGET": {"CyrName": "TARGET", "article_id": "123"}}
+        phoenix._ui_order_page_loaded = False
         phoenix._ensure_order_initialized = mock.Mock(return_value=phoenix._current_order_row)
+        phoenix._snapshot_order_state = mock.Mock(return_value={"row_count": 0, "total_quantity": 0, "quantity_by_key": {}})
         phoenix.refresh_page = mock.Mock()
         phoenix._search_for_product = mock.Mock(return_value=object())
+        phoenix._add_product_to_cart_via_ui = mock.Mock(return_value=True)
+        phoenix._wait_for_ui_order_addition_confirmation = mock.Mock(return_value=True)
+        phoenix._wait_for_order_addition_confirmation = mock.Mock(return_value=False)
+        phoenix._apply_ui_order_addition_locally = mock.Mock()
 
-        with mock.patch.object(phoenix_optimized_module.PhoenixPharma, "add_product_to_cart", autospec=True, return_value=True) as ui_add_mock:
-            result = phoenix_optimized_module.PhoenixPharmaOptimized.add_product_to_cart(phoenix, "TARGET", 2)
+        result = phoenix_optimized_module.PhoenixPharmaOptimized.add_product_to_cart(phoenix, "TARGET", 2)
 
         self.assertTrue(result)
         phoenix._ensure_order_initialized.assert_called_once_with()
         phoenix.refresh_page.assert_called_once_with()
         phoenix._search_for_product.assert_called_once_with("TARGET")
-        ui_add_mock.assert_called_once_with(phoenix, 2)
+        phoenix._add_product_to_cart_via_ui.assert_called_once_with(2)
+        phoenix._wait_for_ui_order_addition_confirmation.assert_called_once()
+        phoenix._apply_ui_order_addition_locally.assert_called_once_with({"CyrName": "TARGET", "article_id": "123"}, 2)
 
     def test_add_product_to_cart_raises_when_ui_search_cannot_find_product(self):
         phoenix = phoenix_optimized_module.PhoenixPharmaOptimized.__new__(phoenix_optimized_module.PhoenixPharmaOptimized)
         phoenix.remember_action = lambda *_args, **_kwargs: None
         phoenix._current_order_row = {"order_id": "15580946"}
+        phoenix._order_item_rows = []
+        phoenix._article_rows_by_name = {}
+        phoenix._ui_order_page_loaded = False
         phoenix._ensure_order_initialized = mock.Mock(return_value=phoenix._current_order_row)
+        phoenix._snapshot_order_state = mock.Mock(return_value={"row_count": 0, "total_quantity": 0, "quantity_by_key": {}})
         phoenix.refresh_page = mock.Mock()
-        phoenix._search_for_product = mock.Mock(return_value=None)
+        phoenix._search_for_product = mock.Mock(side_effect=[None, None])
+        phoenix._add_product_to_cart_via_ui = mock.Mock(return_value=True)
+        phoenix._wait_for_ui_order_addition_confirmation = mock.Mock(return_value=False)
+        phoenix._wait_for_order_addition_confirmation = mock.Mock(return_value=False)
 
-        with mock.patch.object(phoenix_optimized_module.PhoenixPharma, "add_product_to_cart", autospec=True, return_value=True) as ui_add_mock:
-            with self.assertRaisesRegex(ValueError, "UI add-to-cart could not find product"):
-                phoenix_optimized_module.PhoenixPharmaOptimized.add_product_to_cart(phoenix, "TARGET", 2)
+        with self.assertRaisesRegex(ValueError, "UI add-to-cart could not find product"):
+            phoenix_optimized_module.PhoenixPharmaOptimized.add_product_to_cart(phoenix, "TARGET", 2)
 
         phoenix._ensure_order_initialized.assert_called_once_with()
+        self.assertEqual(phoenix.refresh_page.call_count, 2)
+        self.assertEqual(phoenix._search_for_product.call_count, 2)
+        phoenix._add_product_to_cart_via_ui.assert_not_called()
+
+    def test_add_product_to_cart_falls_back_to_order_reload_confirmation(self):
+        phoenix = phoenix_optimized_module.PhoenixPharmaOptimized.__new__(phoenix_optimized_module.PhoenixPharmaOptimized)
+        phoenix.remember_action = lambda *_args, **_kwargs: None
+        phoenix._current_order_row = {"order_id": "15580946"}
+        phoenix._order_item_rows = []
+        phoenix._article_rows_by_name = {"TARGET": {"CyrName": "TARGET", "article_id": "123"}}
+        phoenix._ui_order_page_loaded = False
+        phoenix._ensure_order_initialized = mock.Mock(return_value=phoenix._current_order_row)
+        phoenix._snapshot_order_state = mock.Mock(return_value={"row_count": 0, "total_quantity": 0, "quantity_by_key": {}})
+        phoenix.refresh_page = mock.Mock()
+        phoenix._search_for_product = mock.Mock(return_value=object())
+        phoenix._add_product_to_cart_via_ui = mock.Mock(return_value=True)
+        phoenix._wait_for_ui_order_addition_confirmation = mock.Mock(side_effect=[False, False])
+        phoenix._wait_for_order_addition_confirmation = mock.Mock(return_value=True)
+        phoenix._apply_ui_order_addition_locally = mock.Mock()
+
+        result = phoenix_optimized_module.PhoenixPharmaOptimized.add_product_to_cart(phoenix, "TARGET", 2)
+
+        self.assertTrue(result)
+        self.assertEqual(phoenix.refresh_page.call_count, 2)
+        self.assertEqual(phoenix._wait_for_ui_order_addition_confirmation.call_count, 2)
+        phoenix._wait_for_order_addition_confirmation.assert_called_once()
+        phoenix._apply_ui_order_addition_locally.assert_not_called()
+
+    def test_add_product_to_cart_increases_existing_order_row_for_duplicate_product(self):
+        phoenix = phoenix_optimized_module.PhoenixPharmaOptimized.__new__(phoenix_optimized_module.PhoenixPharmaOptimized)
+        phoenix.remember_action = lambda *_args, **_kwargs: None
+        phoenix._current_order_row = {"order_id": "15580946"}
+        phoenix._order_item_rows = [{"article_id": "123", "quantity": "2"}]
+        phoenix._article_rows_by_name = {"TARGET": {"CyrName": "TARGET", "article_id": "123"}}
+        phoenix._ui_order_page_loaded = False
+        phoenix._ensure_order_initialized = mock.Mock(return_value=phoenix._current_order_row)
+        phoenix._snapshot_order_state = mock.Mock(return_value={"row_count": 1, "total_quantity": 2, "quantity_by_key": {"article_id:123": 2}})
+        phoenix.refresh_page = mock.Mock()
+        phoenix._search_for_product = mock.Mock(return_value=object())
+        phoenix._increase_existing_order_row_quantity = mock.Mock(return_value=True)
+        phoenix._wait_for_ui_order_addition_confirmation = mock.Mock(return_value=True)
+        phoenix._wait_for_order_addition_confirmation = mock.Mock(return_value=False)
+        phoenix._apply_ui_order_addition_locally = mock.Mock()
+
+        result = phoenix_optimized_module.PhoenixPharmaOptimized.add_product_to_cart(phoenix, "TARGET", 2)
+
+        self.assertTrue(result)
         phoenix.refresh_page.assert_called_once_with()
-        phoenix._search_for_product.assert_called_once_with("TARGET")
-        ui_add_mock.assert_not_called()
+        phoenix._increase_existing_order_row_quantity.assert_called_once_with("TARGET", 2)
+        phoenix._search_for_product.assert_not_called()
+        phoenix._apply_ui_order_addition_locally.assert_called_once_with({"CyrName": "TARGET", "article_id": "123"}, 2)
 
 
 if __name__ == "__main__":

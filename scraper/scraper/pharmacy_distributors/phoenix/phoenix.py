@@ -58,7 +58,7 @@ class PhoenixPharma(BrowserCommon):
         lowered = str(exc).lower()
         return "aborted by navigation" in lowered or "not attached to an active page" in lowered
 
-    def _wait_until_mask_is_gone(self, timeout: int = 10):
+    def _wait_until_mask_is_gone(self, timeout: float = 10):
         try:
             WebDriverWait(self.browser, timeout).until_not(
                 EC.presence_of_element_located((By.XPATH, SELECTOR_VISIBLE_MASK))
@@ -70,15 +70,15 @@ class PhoenixPharma(BrowserCommon):
         self._clearSearchResult()
         logger.info("PhoenixPharma:_search_for_product(): product_name:" + product_name)
         self.remember_action(f"Searching Phoenix UI for product '{product_name}'")
-        self._wait_until_mask_is_gone()
+        self._wait_until_mask_is_gone(timeout=1)
         search_box = WebDriverWait(self.browser, 10).until(EC.element_to_be_clickable((By.XPATH, self.SEARCH_BOX_XPATH)))
         search_box.clear()
         search_box.send_keys(product_name)
         self.store_temporary_screenshot()
-        self._wait_until_mask_is_gone()
+        self._wait_until_mask_is_gone(timeout=1)
         search_button = WebDriverWait(self.browser, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, self.SEARCH_BUTTON_CSS_SELECTOR)))
         search_button.click()
-        self._wait_until_mask_is_gone()
+        self._wait_until_mask_is_gone(timeout=1)
 
         # if spellcheck popup appears, hide it
         try:
@@ -88,7 +88,7 @@ class PhoenixPharma(BrowserCommon):
                 logger.info("PhoenixPharma: Closing spellcheck")
                 # spellcheck is triggered only if there are no results, so return None
                 element.click()
-                self._wait_until_mask_is_gone()
+                self._wait_until_mask_is_gone(timeout=1)
                 return None
         except Exception:
             # Neither spellcheck nor result was found, so return None
@@ -170,7 +170,7 @@ class PhoenixPharma(BrowserCommon):
             if not self._is_retryable_navigation_error(exc) and not isinstance(exc, ElementClickInterceptedException):
                 raise
             logger.warning("PhoenixPharma: Retrying product search after transient UI/navigation error: %s", exc)
-            self._wait_until_mask_is_gone()
+            self._wait_until_mask_is_gone(timeout=1)
             self._hide_spellcheck()
             return self._search_for_product_once(product_name)
 
@@ -265,17 +265,10 @@ class PhoenixPharma(BrowserCommon):
 
         logger.info("PhoenixPharma:_clearSearchResult() - clearing last result")
         self.store_temporary_screenshot()
-
-        self._wait_until_mask_is_gone()
+        self._hide_spellcheck()
+        self._wait_until_mask_is_gone(timeout=1)
         search_box = WebDriverWait(self.browser, 10).until(EC.element_to_be_clickable((By.XPATH, self.SEARCH_BOX_XPATH)))
         search_box.clear()
-        search_box.send_keys("IMPOSSIBLE_PRODUCT")
-        try:
-            WebDriverWait(self.browser, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, self.SEARCH_BUTTON_CSS_SELECTOR))).click()
-        except Exception:
-            self._hide_spellcheck()
-            WebDriverWait(self.browser, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, self.SEARCH_BUTTON_CSS_SELECTOR))).click()
-        self._wait_until_mask_is_gone()
 
     def refresh_page(self):
         self.browser.refresh()
