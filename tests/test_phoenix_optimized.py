@@ -3,6 +3,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 def ensure_module(name: str) -> types.ModuleType:
@@ -26,7 +27,8 @@ phoenix_module_stub = ensure_module("pharmacy_distributors.phoenix.phoenix")
 
 
 class StubPhoenixPharma:
-    pass
+    def add_product_to_cart(self, quantity):
+        return quantity is not None
 
 
 phoenix_module_stub.PhoenixPharma = StubPhoenixPharma
@@ -138,6 +140,198 @@ class PhoenixOptimizedPayloadTests(unittest.TestCase):
         self.assertIn("<TotalBasePrice>3.28</TotalBasePrice>", payload)
         self.assertIn("<TotalSalePrice>4.32</TotalSalePrice>", payload)
         self.assertIn("article_id&gt;5344&lt;", payload)
+
+    def test_add_product_to_cart_reloads_order_when_commit_response_drops_existing_items(self):
+        phoenix = phoenix_optimized_module.PhoenixPharmaOptimized.__new__(phoenix_optimized_module.PhoenixPharmaOptimized)
+        phoenix.remember_action = lambda *_args, **_kwargs: None
+        phoenix._current_order_row = {"order_id": "15580946"}
+        phoenix._order_item_rows = [
+            {"article_id": "existing-1", "CyrName": "EXISTING", "quantity": "3"},
+        ]
+        phoenix._article_rows_by_name = {
+            "TARGET": {
+                "article_id": "5344",
+                "article_number": "237305",
+                "CyrName": "TARGET",
+                "LatName": "",
+                "ProducerName": "ALFA",
+                "BasePrice": "1.64",
+                "SalePrice": "2.16",
+                "CustomDiscPct": "0",
+                "CustomDiscType": "A",
+                "pdDisc": "17.00",
+                "pdPrice": "1.85",
+                "pdPharmacySellPrice": "2.65",
+                "ExpiryDate": "11/2027",
+                "MeasureName": "OP",
+                "ProducerCode": "992",
+                "MaxPrice": "0.00",
+                "NHIFSalePrice": "0.00",
+                "NHIFBasePrice": "0.00",
+                "NHIFMaxPrice": "0.00",
+                "isMedicalPrescription": "0",
+                "isWebSaleProhibition": "0",
+                "isDrugstoreAllowed": "1",
+                "isDrug": "0",
+                "isForRefrigerator": "0",
+                "StockLevel": "0",
+                "json_promo_list": "[]",
+            }
+        }
+        phoenix._ensure_order_initialized = lambda: phoenix._current_order_row
+
+        def fake_commit(_items):
+            phoenix._order_item_rows = [
+                {"article_id": "5344", "CyrName": "TARGET", "quantity": "2"},
+            ]
+
+        phoenix._commit_order_items = fake_commit
+        phoenix.refresh_page = lambda: None
+        phoenix._search_for_product = lambda _product_name: object()
+        reload_mock = mock.Mock(
+            side_effect=lambda: (
+                setattr(
+                    phoenix,
+                    "_order_item_rows",
+                    [
+                        {"article_id": "existing-1", "CyrName": "EXISTING", "quantity": "3"},
+                        {"article_id": "5344", "CyrName": "TARGET", "quantity": "2"},
+                    ],
+                ),
+                phoenix._current_order_row,
+            )[1]
+        )
+        phoenix._reload_order_state = reload_mock
+
+        result = phoenix_optimized_module.PhoenixPharmaOptimized.add_product_to_cart(phoenix, "TARGET", 2)
+
+        self.assertTrue(result)
+        reload_mock.assert_called_once()
+
+    def test_add_product_to_cart_falls_back_to_ui_when_api_attempt_leaves_order_unchanged(self):
+        phoenix = phoenix_optimized_module.PhoenixPharmaOptimized.__new__(phoenix_optimized_module.PhoenixPharmaOptimized)
+        phoenix.remember_action = lambda *_args, **_kwargs: None
+        phoenix._current_order_row = {"order_id": "15580946"}
+        phoenix._order_item_rows = [
+            {"article_id": "existing-1", "CyrName": "EXISTING", "quantity": "1"},
+        ]
+        phoenix._article_rows_by_name = {
+            "TARGET": {
+                "article_id": "5344",
+                "article_number": "237305",
+                "CyrName": "TARGET",
+                "LatName": "",
+                "ProducerName": "ALFA",
+                "BasePrice": "1.64",
+                "SalePrice": "2.16",
+                "CustomDiscPct": "0",
+                "CustomDiscType": "A",
+                "pdDisc": "17.00",
+                "pdPrice": "1.85",
+                "pdPharmacySellPrice": "2.65",
+                "ExpiryDate": "11/2027",
+                "MeasureName": "OP",
+                "ProducerCode": "992",
+                "MaxPrice": "0.00",
+                "NHIFSalePrice": "0.00",
+                "NHIFBasePrice": "0.00",
+                "NHIFMaxPrice": "0.00",
+                "isMedicalPrescription": "0",
+                "isWebSaleProhibition": "0",
+                "isDrugstoreAllowed": "1",
+                "isDrug": "0",
+                "isForRefrigerator": "0",
+                "StockLevel": "0",
+                "json_promo_list": "[]",
+            }
+        }
+        phoenix._ensure_order_initialized = lambda: phoenix._current_order_row
+        phoenix._commit_order_items = lambda _items: None
+        phoenix.refresh_page = mock.Mock()
+        phoenix._search_for_product = mock.Mock(return_value=object())
+
+        reload_states = [
+            [{"article_id": "existing-1", "CyrName": "EXISTING", "quantity": "1"}],
+            [
+                {"article_id": "existing-1", "CyrName": "EXISTING", "quantity": "1"},
+                {"article_id": "5344", "CyrName": "TARGET", "quantity": "2"},
+            ],
+        ]
+
+        def fake_reload():
+            phoenix._order_item_rows = reload_states.pop(0)
+            return phoenix._current_order_row
+
+        phoenix._reload_order_state = mock.Mock(side_effect=fake_reload)
+
+        with mock.patch.object(phoenix_optimized_module.PhoenixPharma, "add_product_to_cart", autospec=True, return_value=True) as ui_add_mock:
+            result = phoenix_optimized_module.PhoenixPharmaOptimized.add_product_to_cart(phoenix, "TARGET", 2)
+
+        self.assertTrue(result)
+        phoenix.refresh_page.assert_called_once()
+        phoenix._search_for_product.assert_called_once_with("TARGET")
+        self.assertEqual(phoenix._reload_order_state.call_count, 2)
+        ui_add_mock.assert_called_once_with(phoenix, 2)
+
+    def test_add_product_to_cart_raises_when_api_attempt_changes_order_ambiguously(self):
+        phoenix = phoenix_optimized_module.PhoenixPharmaOptimized.__new__(phoenix_optimized_module.PhoenixPharmaOptimized)
+        phoenix.remember_action = lambda *_args, **_kwargs: None
+        phoenix._current_order_row = {"order_id": "15580946"}
+        phoenix._order_item_rows = [
+            {"article_id": "existing-1", "CyrName": "EXISTING", "quantity": "3"},
+        ]
+        phoenix._article_rows_by_name = {
+            "TARGET": {
+                "article_id": "5344",
+                "article_number": "237305",
+                "CyrName": "TARGET",
+                "LatName": "",
+                "ProducerName": "ALFA",
+                "BasePrice": "1.64",
+                "SalePrice": "2.16",
+                "CustomDiscPct": "0",
+                "CustomDiscType": "A",
+                "pdDisc": "17.00",
+                "pdPrice": "1.85",
+                "pdPharmacySellPrice": "2.65",
+                "ExpiryDate": "11/2027",
+                "MeasureName": "OP",
+                "ProducerCode": "992",
+                "MaxPrice": "0.00",
+                "NHIFSalePrice": "0.00",
+                "NHIFBasePrice": "0.00",
+                "NHIFMaxPrice": "0.00",
+                "isMedicalPrescription": "0",
+                "isWebSaleProhibition": "0",
+                "isDrugstoreAllowed": "1",
+                "isDrug": "0",
+                "isForRefrigerator": "0",
+                "StockLevel": "0",
+                "json_promo_list": "[]",
+            }
+        }
+        phoenix._ensure_order_initialized = lambda: phoenix._current_order_row
+        phoenix._commit_order_items = lambda _items: None
+        phoenix.refresh_page = mock.Mock()
+        phoenix._search_for_product = mock.Mock(return_value=object())
+        phoenix._reload_order_state = mock.Mock(
+            side_effect=lambda: (
+                setattr(
+                    phoenix,
+                    "_order_item_rows",
+                    [
+                        {"article_id": "existing-1", "CyrName": "EXISTING", "quantity": "1"},
+                        {"article_id": "5344", "CyrName": "TARGET", "quantity": "1"},
+                    ],
+                ),
+                phoenix._current_order_row,
+            )[1]
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "changed the order unexpectedly"):
+            phoenix_optimized_module.PhoenixPharmaOptimized.add_product_to_cart(phoenix, "TARGET", 2)
+
+        phoenix.refresh_page.assert_not_called()
 
 
 if __name__ == "__main__":
