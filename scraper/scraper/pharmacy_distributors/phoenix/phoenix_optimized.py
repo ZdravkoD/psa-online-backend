@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 class PhoenixPharmaOptimized(PhoenixPharma):
     REQUEST_TIMEOUT_SECONDS = 30
+    ORDER_CONFIRMATION_RELOAD_ATTEMPTS = 3
+    ORDER_CONFIRMATION_RELOAD_DELAY_SECONDS = 1.0
 
     def __init__(self, pharmacyID: str, shouldInitBrowser=True):
         super().__init__(pharmacyID, shouldInitBrowser)
@@ -503,6 +505,47 @@ class PhoenixPharmaOptimized(PhoenixPharma):
             raise last_error
         raise ValueError(f"PhoenixPharma: Order '{order_id}' was not found during reload")
 
+    def _wait_for_order_addition_confirmation(
+        self,
+        previous_snapshot: dict[str, Any],
+        article_row: dict[str, Any],
+        quantity: int,
+        *,
+        source: str,
+    ) -> bool:
+        if self._order_addition_applied(previous_snapshot, article_row, quantity):
+            return True
+
+        last_reload_error: Exception | None = None
+        for attempt in range(1, self.ORDER_CONFIRMATION_RELOAD_ATTEMPTS + 1):
+            delay_seconds = self.ORDER_CONFIRMATION_RELOAD_DELAY_SECONDS
+            if delay_seconds > 0:
+                time.sleep(delay_seconds)
+
+            try:
+                self._reload_order_state()
+            except Exception as exc:
+                last_reload_error = exc
+                logger.warning(
+                    "PhoenixPharma: %s order confirmation reload %s/%s failed: %s",
+                    source,
+                    attempt,
+                    self.ORDER_CONFIRMATION_RELOAD_ATTEMPTS,
+                    exc,
+                )
+                continue
+
+            if self._order_addition_applied(previous_snapshot, article_row, quantity):
+                return True
+
+        if last_reload_error is not None:
+            logger.warning(
+                "PhoenixPharma: %s order confirmation exhausted reload attempts; last reload error: %s",
+                source,
+                last_reload_error,
+            )
+        return False
+
     def _build_commit_payload(self, order_row: dict[str, Any], items: list[dict[str, Any]]) -> bytes:
         total_quantity = sum(int(self._xml_safe(item.get("quantity", "0")) or "0") for item in items)
         total_base_price = sum(float(self._xml_safe(item.get("BasePrice", "0")) or "0") * int(self._xml_safe(item.get("quantity", "0")) or "0") for item in items)
@@ -619,13 +662,10 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         items = list(self._order_item_rows) + [new_item]
         try:
             self._commit_order_items(items)
-            if self._order_addition_applied(previous_snapshot, article_row, quantity):
-                return True
         except Exception as exc:
             logger.error("PhoenixPharma: Direct API add-to-cart attempt failed before confirmation: %s", exc)
 
-        self._reload_order_state()
-        if self._order_addition_applied(previous_snapshot, article_row, quantity):
+        if self._wait_for_order_addition_confirmation(previous_snapshot, article_row, quantity, source="API"):
             return True
 
         if not self._order_snapshot_matches(previous_snapshot):
@@ -639,8 +679,7 @@ class PhoenixPharmaOptimized(PhoenixPharma):
             if self._search_for_product(product_name) is None:
                 raise ValueError(f"PhoenixPharma: UI fallback could not find product '{product_name}'")
             PhoenixPharma.add_product_to_cart(self, quantity)
-            self._reload_order_state()
-            if self._order_addition_applied(previous_snapshot, article_row, quantity):
+            if self._wait_for_order_addition_confirmation(previous_snapshot, article_row, quantity, source="UI fallback"):
                 return True
             raise RuntimeError("PhoenixPharma: UI fallback did not change the order as expected")
         except Exception as fallback_exc:
