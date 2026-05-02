@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 
 import requests
 from pharmacy_distributors.common.models import ScrapedProductInfo
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
@@ -28,6 +28,11 @@ logger.setLevel(logging.DEBUG)
 
 class StingPharma(BrowserCommon):
     REQUEST_TIMEOUT_SECONDS = 30
+    PREPARE_RETRY_DELAY_SECONDS = 0.2
+    SEARCH_STATE_CAPTURE_ATTEMPTS = 10
+    SEARCH_STATE_CAPTURE_DELAY_SECONDS = 0.1
+    ADD_TO_CART_ATTEMPTS = 3
+    ADD_TO_CART_RETRY_DELAY_SECONDS = 0.1
 
     def __init__(self, pharmacyID: str):
         logger.info("StingPharma.__init__()")
@@ -69,8 +74,7 @@ class StingPharma(BrowserCommon):
         try:
             WebDriverWait(self.browser, 2).until(
                 EC.element_to_be_clickable((By.XPATH, SELECTOR_CLEAR_CART))).click()
-            alert = self.browser.switch_to.alert
-            time.sleep(1)
+            alert = WebDriverWait(self.browser, 2).until(EC.alert_is_present())
             alert.accept()
             self.browser.refresh()
         except Exception as e:
@@ -85,7 +89,7 @@ class StingPharma(BrowserCommon):
             if not self._is_retryable_navigation_error(exc):
                 raise
             logger.warning("StingPharma: Retrying prepare_for_order after transient navigation error: %s", exc)
-            time.sleep(1)
+            time.sleep(self.PREPARE_RETRY_DELAY_SECONDS)
             self._prepare_for_order_once()
 
     def _prepare_for_order_once(self):
@@ -372,6 +376,69 @@ class StingPharma(BrowserCommon):
 
         return rows
 
+    def _wait_for_interactable_xpath(self, xpath: str, timeout: float, poll_frequency: float = 0.1):
+        def find_interactable(_browser):
+            try:
+                elements = _browser.find_elements(By.XPATH, xpath)
+            except StaleElementReferenceException:
+                return False
+
+            for element in elements:
+                try:
+                    if element.is_displayed() and element.is_enabled():
+                        return element
+                except StaleElementReferenceException:
+                    continue
+            return False
+
+        return WebDriverWait(self.browser, timeout, poll_frequency=poll_frequency).until(find_interactable)
+
+    def _restore_search_state_after_add(self):
+        WebDriverWait(self.browser, 2, poll_frequency=0.1).until(
+            EC.element_to_be_clickable((By.XPATH, self.SEARCH_BOX_XPATH))
+        )
+
+        search_mode_inputs = self.browser.find_elements(By.XPATH, "//input[starts-with(@value, 'започва с')]")
+        if len(search_mode_inputs) > 0:
+            search_mode_inputs[0].click()
+            WebDriverWait(self.browser, 1, poll_frequency=0.1).until(
+                EC.element_to_be_clickable((By.XPATH, "//ul[@class='rcbList']//li[contains(text(), 'съдържа')]"))
+            ).click()
+
+        last_error = None
+        for attempt in range(1, self.SEARCH_STATE_CAPTURE_ATTEMPTS + 1):
+            try:
+                self._postback_form_state = self._capture_postback_form_state_from_browser()
+                return
+            except StaleElementReferenceException as exc:
+                last_error = exc
+                if attempt != self.SEARCH_STATE_CAPTURE_ATTEMPTS:
+                    time.sleep(self.SEARCH_STATE_CAPTURE_DELAY_SECONDS)
+
+        if last_error is not None:
+            raise last_error
+
+    def _submit_add_to_cart(self, quantity: int):
+        quantity_xpath = "//td//input[contains(@id, 'QtyResults') and contains(@type, 'text')]"
+        add_button_xpath = "//input[starts-with(@title, 'Добави количеството')]"
+        last_error = None
+
+        for attempt in range(1, self.ADD_TO_CART_ATTEMPTS + 1):
+            try:
+                quantity_input = self._wait_for_interactable_xpath(quantity_xpath, timeout=2)
+                quantity_input.clear()
+                quantity_input.send_keys(str(quantity))
+                self.store_temporary_screenshot()
+                self._wait_for_interactable_xpath(add_button_xpath, timeout=2).click()
+                return
+            except (StaleElementReferenceException, TimeoutException) as exc:
+                last_error = exc
+                if attempt != self.ADD_TO_CART_ATTEMPTS:
+                    time.sleep(self.ADD_TO_CART_RETRY_DELAY_SECONDS)
+
+        if last_error is not None:
+            raise last_error
+
     def _search_for_product(self, product_name: str) -> Tuple[Optional[WebElement], Optional[list[str]]]:
         logger.info(
             "StingPharma:_search_for_product(): product_name:" + product_name)
@@ -382,33 +449,13 @@ class StingPharma(BrowserCommon):
             By.XPATH, self.SEARCH_BOX_XPATH).send_keys(product_name)
         self.store_temporary_screenshot()
         self.browser.find_element(By.XPATH, self.SEARCH_BUTTON_XPATH).click()
-        # wait for spinner to appear
-        try:
-            logger.info(
-                "StingPharma:_search_for_product(): Waiting for spinner to appear...")
-            WebDriverWait(self.browser, 2).until(EC.element_to_be_clickable(
-                (By.CSS_SELECTOR, "body > .RadAjax.RadAjax_Vista")))
-        except Exception:
-            logger.info(
-                "StingPharma:_search_for_product(): Spinner didn't appear, assume it's OK")
-        # wait for spinner to dissapear
-        logger.info(
-            "StingPharma:_search_for_product(): Waiting for spinner to disappear...")
-        try:
-            WebDriverWait(self.browser, 10).until_not(EC.element_to_be_clickable(
-                (By.CSS_SELECTOR, "body > .RadAjax.RadAjax_Vista")))
-            time.sleep(0.3)
-        except Exception:
-            logger.info(
-                "StingPharma:_search_for_product(): Spinner didn't disappear, assume it's OK")
 
         SELECTOR_ADD_QUANTITY = "//div[contains(text(), 'Няма открити артикули.')]|//input[starts-with(@title, 'Добави количеството')]"
         try:
-            element: WebElement = WebDriverWait(self.browser, 5)\
-                .until(EC.element_to_be_clickable((By.XPATH, SELECTOR_ADD_QUANTITY)))
+            element: WebElement = self._wait_for_interactable_xpath(SELECTOR_ADD_QUANTITY, timeout=3)
         except Exception as e:
             logger.error(
-                "StingPharma: Something went wrong with the search result. Didn't get result in less than 5 seconds")
+                "StingPharma: Something went wrong with the search result. Didn't get result in less than 3 seconds")
             logger.error(e)
             return None, None
 
@@ -453,23 +500,8 @@ class StingPharma(BrowserCommon):
         self.remember_action("Clearing previous Sting search results")
         logger.info("StingPharma:_clearSearchResult() - clearing last result")
         self.browser.find_element(By.XPATH, self.SEARCH_BOX_XPATH).clear()
-        self.browser.find_element(
-            By.XPATH, self.SEARCH_BOX_XPATH).send_keys("IMPOSSIBLE_PRODUCT")
         self.store_temporary_screenshot()
-        self.browser.find_element(By.XPATH, self.SEARCH_BUTTON_XPATH).click()
-        # wait for spinner to appear
-        try:
-            logger.info(
-                "StingPharma:_clearSearchResult(): Waiting for spinner to appear...")
-            WebDriverWait(self.browser, 2).until(EC.element_to_be_clickable(
-                (By.CSS_SELECTOR, "body > .RadAjax.RadAjax_Vista")))
-            logger.info(
-                "StingPharma:_clearSearchResult(): Waiting for spinner to disappear...")
-            WebDriverWait(self.browser, 20).until_not(EC.element_to_be_clickable(
-                (By.CSS_SELECTOR, "body > .RadAjax.RadAjax_Vista")))
-        except Exception:
-            logger.info(
-                "StingPharma:_search_for_product(): Spinner didn't appear, return None!")
+        self._last_search_result_name = None
 
     def refresh_page(self):
         self.remember_action("Refreshing Sting product page")
@@ -548,16 +580,14 @@ class StingPharma(BrowserCommon):
             if element is None:
                 return False
         self.remember_action(f"Adding product to Sting cart with quantity {quantity}")
-        self.browser.find_element(
-            By.XPATH, "//td//input[contains(@id, 'QtyResults') and contains(@type, 'text')]").clear()
-        self.browser.find_element(
-            By.XPATH, "//td//input[contains(@id, 'QtyResults') and contains(@type, 'text')]").send_keys(str(quantity))
-        self.store_temporary_screenshot()
-        self.browser.find_element(
-            By.XPATH, "//input[starts-with(@title, 'Добави количеството')]").click()
+        self._submit_add_to_cart(quantity)
 
-        self.refresh_page()
-        self._postback_form_state = None
+        try:
+            self._restore_search_state_after_add()
+        except Exception as exc:
+            logger.warning("StingPharma: Fast search state restore failed after add-to-cart, falling back to refresh: %s", exc)
+            self.refresh_page()
+            self._postback_form_state = None
         self._last_search_result_name = None
 
         return True

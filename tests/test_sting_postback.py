@@ -3,6 +3,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 def ensure_module(name: str) -> types.ModuleType:
@@ -58,6 +59,7 @@ configuration_module.DistributorConfig = type(
 ensure_module("selenium")
 selenium_common = ensure_module("selenium.common")
 selenium_common_exceptions = ensure_module("selenium.common.exceptions")
+selenium_common_exceptions.StaleElementReferenceException = type("StaleElementReferenceException", (Exception,), {})
 selenium_common_exceptions.TimeoutException = type("TimeoutException", (Exception,), {})
 selenium_common_exceptions.WebDriverException = type("WebDriverException", (Exception,), {})
 
@@ -70,6 +72,7 @@ webdriver_common_keys.Keys = type("Keys", (), {"RETURN": "\n"})
 webdriver_support = ensure_module("selenium.webdriver.support")
 webdriver_support_expected = ensure_module("selenium.webdriver.support.expected_conditions")
 webdriver_support_expected.element_to_be_clickable = lambda *args, **kwargs: None
+webdriver_support_expected.alert_is_present = lambda *args, **kwargs: None
 webdriver_support_ui = ensure_module("selenium.webdriver.support.ui")
 webdriver_support_ui.WebDriverWait = type("WebDriverWait", (), {})
 webdriver_remote = ensure_module("selenium.webdriver.remote")
@@ -163,6 +166,111 @@ class StingPostbackTests(unittest.TestCase):
         self.assertEqual(rows[0]["name"], "БИОКС-КОМПЛЕКС сироп 100мл.")
         self.assertEqual(rows[0]["price"], 1.88)
         self.assertTrue(rows[0]["has_add_input"])
+
+    def test_clear_search_result_only_clears_box(self):
+        sting = sting_module.StingPharma.__new__(sting_module.StingPharma)
+        sting.lastSearchWasEmpty = False
+        sting._last_search_result_name = "OLD"
+        sting.SEARCH_BOX_XPATH = "//search"
+        sting.remember_action = lambda *_args, **_kwargs: None
+        sting.store_temporary_screenshot = lambda *_args, **_kwargs: None
+        search_box = mock.Mock()
+        sting.browser = mock.Mock()
+        sting.browser.find_element.return_value = search_box
+
+        sting_module.StingPharma._clearSearchResult(sting)
+
+        self.assertTrue(sting.lastSearchWasEmpty)
+        self.assertIsNone(sting._last_search_result_name)
+        search_box.clear.assert_called_once_with()
+        search_box.send_keys.assert_not_called()
+
+    def test_search_for_product_uses_result_wait_instead_of_spinner_cycle(self):
+        sting = sting_module.StingPharma.__new__(sting_module.StingPharma)
+        sting.SEARCH_BOX_XPATH = "//search"
+        sting.SEARCH_BUTTON_XPATH = "//button"
+        sting.lastSearchWasEmpty = True
+        sting.remember_action = lambda *_args, **_kwargs: None
+        sting.store_temporary_screenshot = lambda *_args, **_kwargs: None
+        sting._clearSearchResult = mock.Mock()
+        sting._wait_for_interactable_xpath = mock.Mock()
+
+        search_box = mock.Mock()
+        search_button = mock.Mock()
+        add_input = mock.Mock()
+        add_input.tag_name = "input"
+        add_input.is_displayed.return_value = True
+        add_input.is_enabled.return_value = True
+
+        sting.browser = mock.Mock()
+        sting.browser.find_element.side_effect = [search_box, search_box, search_button]
+        sting.browser.find_elements.return_value = [add_input]
+        sting._wait_for_interactable_xpath.return_value = add_input
+
+        element, alternative_names = sting_module.StingPharma._search_for_product(sting, "TARGET")
+
+        self.assertIs(element, add_input)
+        self.assertIsNone(alternative_names)
+        sting._clearSearchResult.assert_called_once_with()
+        sting._wait_for_interactable_xpath.assert_called_once()
+        self.assertEqual(sting._last_search_result_name, "TARGET")
+        self.assertFalse(sting.lastSearchWasEmpty)
+
+    def test_submit_add_to_cart_retries_on_stale_click(self):
+        sting = sting_module.StingPharma.__new__(sting_module.StingPharma)
+        sting.store_temporary_screenshot = lambda *_args, **_kwargs: None
+
+        quantity_input = mock.Mock()
+        add_button_first = mock.Mock()
+        add_button_second = mock.Mock()
+        add_button_first.click.side_effect = sting_module.StaleElementReferenceException("stale")
+        sting._wait_for_interactable_xpath = mock.Mock(
+            side_effect=[quantity_input, add_button_first, quantity_input, add_button_second]
+        )
+
+        with mock.patch.object(sting_module.time, "sleep") as sleep_mock:
+            sting_module.StingPharma._submit_add_to_cart(sting, 2)
+
+        self.assertEqual(quantity_input.clear.call_count, 2)
+        self.assertEqual(quantity_input.send_keys.call_count, 2)
+        quantity_input.send_keys.assert_called_with("2")
+        add_button_first.click.assert_called_once_with()
+        add_button_second.click.assert_called_once_with()
+        sleep_mock.assert_called_once_with(sting_module.StingPharma.ADD_TO_CART_RETRY_DELAY_SECONDS)
+
+    def test_add_product_to_cart_uses_fast_restore_without_refresh(self):
+        sting = sting_module.StingPharma.__new__(sting_module.StingPharma)
+        sting._last_search_result_name = "TARGET"
+        sting.remember_action = lambda *_args, **_kwargs: None
+        sting._submit_add_to_cart = mock.Mock()
+        sting._restore_search_state_after_add = mock.Mock()
+        sting.refresh_page = mock.Mock()
+        sting._postback_form_state = {"state": "old"}
+
+        result = sting_module.StingPharma.add_product_to_cart(sting, "TARGET", 3)
+
+        self.assertTrue(result)
+        sting._submit_add_to_cart.assert_called_once_with(3)
+        sting._restore_search_state_after_add.assert_called_once_with()
+        sting.refresh_page.assert_not_called()
+        self.assertEqual(sting._postback_form_state, {"state": "old"})
+        self.assertIsNone(sting._last_search_result_name)
+
+    def test_add_product_to_cart_refreshes_when_fast_restore_fails(self):
+        sting = sting_module.StingPharma.__new__(sting_module.StingPharma)
+        sting._last_search_result_name = "TARGET"
+        sting.remember_action = lambda *_args, **_kwargs: None
+        sting._submit_add_to_cart = mock.Mock()
+        sting._restore_search_state_after_add = mock.Mock(side_effect=RuntimeError("boom"))
+        sting.refresh_page = mock.Mock()
+        sting._postback_form_state = {"state": "old"}
+
+        result = sting_module.StingPharma.add_product_to_cart(sting, "TARGET", 1)
+
+        self.assertTrue(result)
+        sting.refresh_page.assert_called_once_with()
+        self.assertIsNone(sting._postback_form_state)
+        self.assertIsNone(sting._last_search_result_name)
 
 
 if __name__ == "__main__":
