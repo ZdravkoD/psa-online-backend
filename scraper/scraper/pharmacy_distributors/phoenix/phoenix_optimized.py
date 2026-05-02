@@ -738,45 +738,13 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         self._order_item_rows = self._decode_order_item_rows(row.get("xml_item_list"))
 
     def add_product_to_cart(self, product_name: str, quantity):
-        self.remember_action(f"Adding product '{product_name}' to Phoenix cart with quantity {quantity} via API")
-        logger.info("PhoenixPharmaOptimized: Adding product to cart via API: %s, quantity: %s", product_name, quantity)
+        self.remember_action(f"Adding product '{product_name}' to Phoenix cart with quantity {quantity} via UI")
+        logger.info("PhoenixPharmaOptimized: Adding product to cart via UI: %s, quantity: %s", product_name, quantity)
 
         self._ensure_order_initialized()
-        previous_snapshot = self._snapshot_order_state()
-        article_row = self._article_rows_by_name.get(product_name)
-        if article_row is None:
-            article_row, _ = self._search_for_product_optimized(product_name)
-        if article_row is None:
-            logger.error("PhoenixPharma: Could not load product details for direct API cart insertion: %s", product_name)
-            return None
-
-        new_item = self._build_order_item_row(article_row, quantity, len(self._order_item_rows) + 1)
-        items = list(self._order_item_rows) + [new_item]
-        try:
-            self._commit_order_items(items)
-        except Exception as exc:
-            logger.error("PhoenixPharma: Direct API add-to-cart attempt failed before confirmation: %s", exc)
-
-        if self._wait_for_order_addition_confirmation(previous_snapshot, article_row, quantity, source="API"):
-            return True
-
         self.refresh_page()
-        if self._wait_for_ui_order_addition_confirmation(previous_snapshot, article_row, quantity, source="Post-API refresh"):
-            return True
+        if self._search_for_product(product_name) is None:
+            raise ValueError(f"PhoenixPharma: UI add-to-cart could not find product '{product_name}'")
 
-        if not self._order_snapshot_matches(previous_snapshot):
-            raise RuntimeError(
-                "PhoenixPharma: API item commit changed the order unexpectedly and the requested quantity was not confirmed"
-            )
-
-        logger.error("PhoenixPharma: Direct API add-to-cart was not confirmed, falling back to UI flow")
-        try:
-            if self._search_for_product(product_name) is None:
-                raise ValueError(f"PhoenixPharma: UI fallback could not find product '{product_name}'")
-            PhoenixPharma.add_product_to_cart(self, quantity)
-            if self._wait_for_ui_order_addition_confirmation(previous_snapshot, article_row, quantity, source="UI fallback"):
-                return True
-            raise RuntimeError("PhoenixPharma: UI fallback did not change the order as expected")
-        except Exception as fallback_exc:
-            logger.error("PhoenixPharma: Fallback UI add-to-cart failed: %s", fallback_exc)
-            raise
+        PhoenixPharma.add_product_to_cart(self, quantity)
+        return True
