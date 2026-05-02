@@ -97,6 +97,8 @@ class StingPostbackTests(unittest.TestCase):
         }
 
     def test_build_search_postback_payload_includes_expected_fields(self):
+        self.sting._postback_form_state["ctl00$grid$RadGridResults_ClientState"] = '{"stale":"yes"}'
+        self.sting._postback_form_state["ctl00$grid$QtyResults$0"] = "2"
         payload = sting_module.StingPharma._build_search_postback_payload(self.sting, "биокс-комплекс сироп 100мл")
 
         self.assertEqual(payload["__ASYNCPOST"], "true")
@@ -114,6 +116,8 @@ class StingPostbackTests(unittest.TestCase):
                 "ctl00_ctl00_ctl00_ctl00_ctl00_ContentPlaceHolderBody_ContentPlaceHolderBody_ContentPlaceHolderBody_ContentPlaceHolderBody_ContentPlaceHolderBody_NameFilterBox_ClientState"
             ],
         )
+        self.assertNotIn("ctl00$grid$RadGridResults_ClientState", payload)
+        self.assertNotIn("ctl00$grid$QtyResults$0", payload)
 
     def test_parse_search_results_panel_html_returns_empty_for_no_records(self):
         response = (
@@ -216,6 +220,43 @@ class StingPostbackTests(unittest.TestCase):
         self.assertEqual(sting._last_search_result_name, "TARGET")
         self.assertFalse(sting.lastSearchWasEmpty)
 
+    def test_capture_postback_form_state_ignores_grid_inputs(self):
+        sting = sting_module.StingPharma.__new__(sting_module.StingPharma)
+        sting._get_name_filter_box_field_name = lambda: "NameFilterBox"
+        sting._get_name_filter_box_client_state_field_name = lambda: "NameFilterBoxClientState"
+
+        hidden_viewstate = mock.Mock()
+        hidden_viewstate.get_attribute.side_effect = lambda name: {
+            "name": "__VIEWSTATE",
+            "type": "hidden",
+            "value": "viewstate",
+        }.get(name)
+        search_box = mock.Mock()
+        search_box.get_attribute.side_effect = lambda name: {
+            "name": "NameFilterBox",
+            "type": "text",
+            "value": "needle",
+        }.get(name)
+        qty_input = mock.Mock()
+        qty_input.get_attribute.side_effect = lambda name: {
+            "name": "ctl00$grid$QtyResults$0",
+            "type": "text",
+            "value": "2",
+        }.get(name)
+        grid_state = mock.Mock()
+        grid_state.get_attribute.side_effect = lambda name: {
+            "name": "ctl00$grid$RadGridResults_ClientState",
+            "type": "hidden",
+            "value": '{"stale":"yes"}',
+        }.get(name)
+
+        sting.browser = mock.Mock()
+        sting.browser.find_elements.return_value = [hidden_viewstate, search_box, qty_input, grid_state]
+
+        state = sting_module.StingPharma._capture_postback_form_state_from_browser(sting)
+
+        self.assertEqual(state, {"__VIEWSTATE": "viewstate", "NameFilterBox": "needle"})
+
     def test_submit_add_to_cart_retries_on_stale_click(self):
         sting = sting_module.StingPharma.__new__(sting_module.StingPharma)
         sting.store_temporary_screenshot = lambda *_args, **_kwargs: None
@@ -271,6 +312,21 @@ class StingPostbackTests(unittest.TestCase):
         sting.refresh_page.assert_called_once_with()
         self.assertIsNone(sting._postback_form_state)
         self.assertIsNone(sting._last_search_result_name)
+
+    def test_restore_search_state_after_add_invalidates_postback_cache(self):
+        sting = sting_module.StingPharma.__new__(sting_module.StingPharma)
+        sting.SEARCH_BOX_XPATH = "//search"
+        sting._postback_form_state = {"stale": "yes"}
+        sting.browser = mock.Mock()
+        sting.browser.find_elements.return_value = []
+
+        wait_instance = mock.Mock()
+        wait_instance.until.return_value = mock.Mock()
+
+        with mock.patch.object(sting_module, "WebDriverWait", return_value=wait_instance):
+            sting_module.StingPharma._restore_search_state_after_add(sting)
+
+        self.assertIsNone(sting._postback_form_state)
 
 
 if __name__ == "__main__":

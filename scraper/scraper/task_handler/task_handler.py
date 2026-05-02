@@ -390,6 +390,9 @@ class TaskHandler:
         logger.info(
             f"Best product: {best_product.name}, Price: {best_product.price}, added To {best_product.scraper.get_name()}")
         try:
+            # Critical ordering invariant:
+            # it is safer to leave a row unbought than to buy the wrong product or
+            # accidentally increase the quantity of another product because of a bad match.
             if best_product.scraper.add_product_to_cart(best_product.name, quantity):
                 self._store_bought_product(
                     productName, all_product_prices, best_product.scraper.get_name())

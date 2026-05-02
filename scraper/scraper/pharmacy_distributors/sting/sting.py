@@ -29,8 +29,6 @@ logger.setLevel(logging.DEBUG)
 class StingPharma(BrowserCommon):
     REQUEST_TIMEOUT_SECONDS = 30
     PREPARE_RETRY_DELAY_SECONDS = 0.2
-    SEARCH_STATE_CAPTURE_ATTEMPTS = 10
-    SEARCH_STATE_CAPTURE_DELAY_SECONDS = 0.1
     ADD_TO_CART_ATTEMPTS = 3
     ADD_TO_CART_RETRY_DELAY_SECONDS = 0.1
 
@@ -196,13 +194,34 @@ class StingPharma(BrowserCommon):
             name = element.get_attribute("name") or ""
             if name == "":
                 continue
+            input_type = (element.get_attribute("type") or "").lower()
+            if not self._is_reusable_postback_state_field(name, input_type):
+                continue
             state[name] = element.get_attribute("value") or ""
         return state
+
+    def _is_reusable_postback_state_field(self, field_name: str, input_type: str) -> bool:
+        lowered_field_name = field_name.lower()
+        if "radgrid" in lowered_field_name or "qtyresults" in lowered_field_name:
+            return False
+        if input_type == "hidden":
+            return True
+        if "radcomboboxsearchtype" in lowered_field_name:
+            return True
+        if field_name == self._get_name_filter_box_field_name():
+            return True
+        if field_name == self._get_name_filter_box_client_state_field_name():
+            return True
+        return False
 
     def _get_postback_form_state(self) -> dict[str, str]:
         if self._postback_form_state is None:
             self._postback_form_state = self._capture_postback_form_state_from_browser()
-        return dict(self._postback_form_state)
+        return {
+            field_name: value
+            for field_name, value in self._postback_form_state.items()
+            if self._is_reusable_postback_state_field(field_name, "hidden")
+        }
 
     def _update_postback_form_state(self, response_text: str, product_name: str):
         if self._postback_form_state is None:
@@ -222,19 +241,8 @@ class StingPharma(BrowserCommon):
         )
 
         for field_name, value in re.findall(r"hiddenField\|([^|]+)\|([^|]*)", response_text):
-            self._postback_form_state[field_name] = value
-
-        grid_html = self._extract_results_panel_html(response_text)
-        if grid_html is None:
-            return
-
-        grid_state_match = re.search(
-            r'name="([^"]*RadGridResults_ClientState)"[^>]*value="([^"]*)"',
-            grid_html,
-            re.S,
-        )
-        if grid_state_match is not None:
-            self._postback_form_state[grid_state_match.group(1)] = html.unescape(grid_state_match.group(2))
+            if self._is_reusable_postback_state_field(field_name, "hidden"):
+                self._postback_form_state[field_name] = value
 
     def _get_search_button_field_name(self) -> str:
         return (
@@ -404,19 +412,7 @@ class StingPharma(BrowserCommon):
             WebDriverWait(self.browser, 1, poll_frequency=0.1).until(
                 EC.element_to_be_clickable((By.XPATH, "//ul[@class='rcbList']//li[contains(text(), 'съдържа')]"))
             ).click()
-
-        last_error = None
-        for attempt in range(1, self.SEARCH_STATE_CAPTURE_ATTEMPTS + 1):
-            try:
-                self._postback_form_state = self._capture_postback_form_state_from_browser()
-                return
-            except StaleElementReferenceException as exc:
-                last_error = exc
-                if attempt != self.SEARCH_STATE_CAPTURE_ATTEMPTS:
-                    time.sleep(self.SEARCH_STATE_CAPTURE_DELAY_SECONDS)
-
-        if last_error is not None:
-            raise last_error
+        self._postback_form_state = None
 
     def _submit_add_to_cart(self, quantity: int):
         quantity_xpath = "//td//input[contains(@id, 'QtyResults') and contains(@type, 'text')]"
