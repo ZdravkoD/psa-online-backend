@@ -11,7 +11,9 @@ from xml.sax.saxutils import escape
 import requests
 import xmltodict
 from pharmacy_distributors.common.models import ScrapedProductInfo
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
 
 from pharmacy_distributors.phoenix.phoenix import PhoenixPharma
 
@@ -23,10 +25,12 @@ logger = logging.getLogger(__name__)
 
 class PhoenixPharmaOptimized(PhoenixPharma):
     REQUEST_TIMEOUT_SECONDS = 30
-    ORDER_CONFIRMATION_RELOAD_ATTEMPTS = 3
-    ORDER_CONFIRMATION_RELOAD_DELAY_SECONDS = 1.0
-    UI_ORDER_CONFIRMATION_ATTEMPTS = 10
-    UI_ORDER_CONFIRMATION_DELAY_SECONDS = 0.2
+    PARTNER_LOOKUP_ATTEMPTS = 8
+    PARTNER_LOOKUP_DELAY_SECONDS = 0.2
+    ORDER_CONFIRMATION_RELOAD_ATTEMPTS = 5
+    ORDER_CONFIRMATION_RELOAD_DELAY_SECONDS = 0.2
+    UI_ORDER_CONFIRMATION_TIMEOUT_SECONDS = 1.0
+    UI_ORDER_CONFIRMATION_POLL_SECONDS = 0.1
 
     def __init__(self, pharmacyID: str, shouldInitBrowser=True):
         super().__init__(pharmacyID, shouldInitBrowser)
@@ -86,7 +90,7 @@ class PhoenixPharmaOptimized(PhoenixPharma):
             return self._partner_row
 
         last_error: Exception | None = None
-        for attempt in range(1, 4):
+        for attempt in range(1, self.PARTNER_LOOKUP_ATTEMPTS + 1):
             self.remember_action(f"Loading Phoenix partner data for pharmacy {self.pharmacyID}")
             try:
                 response = self._request(
@@ -104,12 +108,14 @@ class PhoenixPharmaOptimized(PhoenixPharma):
                 last_error = exc
 
             logger.warning(
-                "PhoenixPharma: Partner lookup attempt %s/3 failed for pharmacy %s: %s",
+                "PhoenixPharma: Partner lookup attempt %s/%s failed for pharmacy %s: %s",
                 attempt,
+                self.PARTNER_LOOKUP_ATTEMPTS,
                 self.pharmacyID,
                 last_error,
             )
-            time.sleep(1)
+            if attempt != self.PARTNER_LOOKUP_ATTEMPTS:
+                time.sleep(self.PARTNER_LOOKUP_DELAY_SECONDS)
 
         raise last_error if last_error is not None else ValueError(
             f"Phoenix partner with pharmacy ID '{self.pharmacyID}' was not found."
@@ -524,7 +530,7 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         last_reload_error: Exception | None = None
         for attempt in range(1, self.ORDER_CONFIRMATION_RELOAD_ATTEMPTS + 1):
             delay_seconds = self.ORDER_CONFIRMATION_RELOAD_DELAY_SECONDS
-            if delay_seconds > 0:
+            if attempt > 1 and delay_seconds > 0:
                 time.sleep(delay_seconds)
 
             try:
@@ -628,21 +634,21 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         if self._ui_order_addition_applied(previous_snapshot, article_row, quantity):
             return True
 
-        for attempt in range(1, self.UI_ORDER_CONFIRMATION_ATTEMPTS + 1):
-            delay_seconds = self.UI_ORDER_CONFIRMATION_DELAY_SECONDS
-            if delay_seconds > 0:
-                time.sleep(delay_seconds)
-
-            if self._ui_order_addition_applied(previous_snapshot, article_row, quantity):
-                return True
-
-        logger.warning(
-            "PhoenixPharma: %s UI confirmation exhausted %s attempts for product '%s'",
-            source,
-            self.UI_ORDER_CONFIRMATION_ATTEMPTS,
-            self._xml_safe(article_row.get("CyrName")).strip(),
-        )
-        return False
+        try:
+            WebDriverWait(
+                self.browser,
+                self.UI_ORDER_CONFIRMATION_TIMEOUT_SECONDS,
+                poll_frequency=self.UI_ORDER_CONFIRMATION_POLL_SECONDS,
+            ).until(lambda _browser: self._ui_order_addition_applied(previous_snapshot, article_row, quantity))
+            return True
+        except TimeoutException:
+            logger.warning(
+                "PhoenixPharma: %s UI confirmation timed out after %.2fs for product '%s'",
+                source,
+                self.UI_ORDER_CONFIRMATION_TIMEOUT_SECONDS,
+                self._xml_safe(article_row.get("CyrName")).strip(),
+            )
+            return False
 
     def _increase_existing_order_row_quantity(self, product_name: str, quantity: int):
         row_xpath = self._get_order_row_xpath(product_name)
@@ -650,8 +656,6 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         plus_button = self.browser.find_element(By.XPATH, plus_button_xpath)
         for _ in range(quantity):
             plus_button.click()
-
-        self._wait_until_mask_is_gone(timeout=1)
         return True
 
     def _build_commit_payload(self, order_row: dict[str, Any], items: list[dict[str, Any]]) -> bytes:
@@ -766,7 +770,6 @@ class PhoenixPharmaOptimized(PhoenixPharma):
 
         self.store_temporary_screenshot()
         self.browser.find_element(By.XPATH, "//span[text()='Добави']").click()
-        self._wait_until_mask_is_gone(timeout=1)
         return True
 
     def _apply_ui_order_addition_locally(self, article_row: dict[str, Any], quantity: int):

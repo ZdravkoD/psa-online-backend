@@ -7,7 +7,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import ElementClickInterceptedException, TimeoutException, WebDriverException
+from selenium.common.exceptions import ElementClickInterceptedException, StaleElementReferenceException, TimeoutException, WebDriverException
 
 from pharmacy_distributors.common.browser_common import BrowserCommon
 from configuration.common import DistributorConfig
@@ -66,29 +66,44 @@ class PhoenixPharma(BrowserCommon):
         except TimeoutException:
             logger.info("PhoenixPharma: loading mask did not disappear within %s seconds", timeout)
 
+    def _wait_for_interactable_xpath(self, xpath: str, timeout: float, poll_frequency: float = 0.1):
+        def find_interactable(_browser):
+            try:
+                elements = _browser.find_elements(By.XPATH, xpath)
+            except StaleElementReferenceException:
+                return False
+
+            for element in elements:
+                try:
+                    if element.is_displayed() and element.is_enabled():
+                        return element
+                except StaleElementReferenceException:
+                    continue
+            return False
+
+        return WebDriverWait(self.browser, timeout, poll_frequency=poll_frequency).until(find_interactable)
+
     def _search_for_product_once(self, product_name: str):
         self._clearSearchResult()
         logger.info("PhoenixPharma:_search_for_product(): product_name:" + product_name)
         self.remember_action(f"Searching Phoenix UI for product '{product_name}'")
-        self._wait_until_mask_is_gone(timeout=1)
         search_box = WebDriverWait(self.browser, 10).until(EC.element_to_be_clickable((By.XPATH, self.SEARCH_BOX_XPATH)))
         search_box.clear()
         search_box.send_keys(product_name)
         self.store_temporary_screenshot()
-        self._wait_until_mask_is_gone(timeout=1)
         search_button = WebDriverWait(self.browser, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, self.SEARCH_BUTTON_CSS_SELECTOR)))
         search_button.click()
-        self._wait_until_mask_is_gone(timeout=1)
 
         # if spellcheck popup appears, hide it
         try:
-            element = WebDriverWait(self.browser, 5)\
-                .until(EC.element_to_be_clickable((By.XPATH, SELECTOR_SPELLCHECK + "|" + self.PRODUCT_PLUS_BUTTON_XPATH)))
+            element = self._wait_for_interactable_xpath(
+                SELECTOR_SPELLCHECK + "|" + self.PRODUCT_PLUS_BUTTON_XPATH,
+                timeout=2,
+            )
             if element.tag_name == 'div':
                 logger.info("PhoenixPharma: Closing spellcheck")
                 # spellcheck is triggered only if there are no results, so return None
                 element.click()
-                self._wait_until_mask_is_gone(timeout=1)
                 return None
         except Exception:
             # Neither spellcheck nor result was found, so return None
@@ -170,7 +185,6 @@ class PhoenixPharma(BrowserCommon):
             if not self._is_retryable_navigation_error(exc) and not isinstance(exc, ElementClickInterceptedException):
                 raise
             logger.warning("PhoenixPharma: Retrying product search after transient UI/navigation error: %s", exc)
-            self._wait_until_mask_is_gone(timeout=1)
             self._hide_spellcheck()
             return self._search_for_product_once(product_name)
 
@@ -266,7 +280,6 @@ class PhoenixPharma(BrowserCommon):
         logger.info("PhoenixPharma:_clearSearchResult() - clearing last result")
         self.store_temporary_screenshot()
         self._hide_spellcheck()
-        self._wait_until_mask_is_gone(timeout=1)
         search_box = WebDriverWait(self.browser, 10).until(EC.element_to_be_clickable((By.XPATH, self.SEARCH_BOX_XPATH)))
         search_box.clear()
 
