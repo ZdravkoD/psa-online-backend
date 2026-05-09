@@ -2,6 +2,7 @@ import html
 import json
 import logging
 import math
+import re
 import time
 from datetime import datetime
 from typing import Any, Optional, Tuple
@@ -27,7 +28,7 @@ class PhoenixPharmaOptimized(PhoenixPharma):
     REQUEST_TIMEOUT_SECONDS = 30
     PARTNER_LOOKUP_ATTEMPTS = 8
     PARTNER_LOOKUP_DELAY_SECONDS = 0.2
-    ORDER_CONFIRMATION_RELOAD_ATTEMPTS = 5
+    ORDER_CONFIRMATION_RELOAD_ATTEMPTS = 10
     ORDER_CONFIRMATION_RELOAD_DELAY_SECONDS = 0.2
     UI_ORDER_CONFIRMATION_TIMEOUT_SECONDS = 1.0
     UI_ORDER_CONFIRMATION_POLL_SECONDS = 0.1
@@ -402,7 +403,7 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         try:
             dataset = self._parse_xml_dataset(decoded_xml)
         except Exception:
-            return []
+            return self._decode_order_item_rows_fallback(decoded_xml)
 
         rows = dataset.get("row")
         if rows is None:
@@ -412,6 +413,38 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         if isinstance(rows, dict):
             return [rows]
         return []
+
+    def _decode_order_item_rows_fallback(self, decoded_xml: str) -> list[dict[str, Any]]:
+        fields = (
+            "order_item_id",
+            "item_id",
+            "article_id",
+            "article_number",
+            "CyrName",
+            "LatName",
+            "ProducerName",
+            "BasePrice",
+            "SalePrice",
+            "pdPrice",
+            "quantity",
+            "quantity_confirmed",
+            "ExpiryDate",
+            "MeasureName",
+            "Barcode1",
+            "Barcode2",
+            "Description",
+        )
+        rows: list[dict[str, Any]] = []
+        for match in re.finditer(r"<row>(.*?)</row>", decoded_xml, re.S):
+            row_xml = match.group(1)
+            row: dict[str, Any] = {}
+            for field_name in fields:
+                field_match = re.search(rf"<{field_name}>(.*?)</{field_name}>", row_xml, re.S)
+                if field_match is not None:
+                    row[field_name] = html.unescape(field_match.group(1))
+            if row:
+                rows.append(row)
+        return rows
 
     def _to_int(self, value: Any) -> int:
         text_value = self._xml_safe(value).strip()
@@ -805,16 +838,21 @@ class PhoenixPharmaOptimized(PhoenixPharma):
 
             self._add_product_to_cart_via_ui(quantity)
 
+        # The UI grid often lags behind the successful add-to-cart request. Confirm via order reload
+        # before refreshing, otherwise a premature refresh can interrupt the async UI save.
+        if self._wait_for_order_addition_confirmation(previous_snapshot, article_row, quantity, source="UI add-to-cart order reload"):
+            return True
+
         if self._wait_for_ui_order_addition_confirmation(previous_snapshot, article_row, quantity, source="UI add-to-cart"):
             self._apply_ui_order_addition_locally(article_row, quantity)
             return True
 
         self._ensure_ui_order_page_loaded(force_reload=True)
-        if self._wait_for_ui_order_addition_confirmation(previous_snapshot, article_row, quantity, source="UI add-to-cart after refresh"):
-            self._apply_ui_order_addition_locally(article_row, quantity)
+        if self._wait_for_order_addition_confirmation(previous_snapshot, article_row, quantity, source="UI add-to-cart order reload after refresh"):
             return True
 
-        if self._wait_for_order_addition_confirmation(previous_snapshot, article_row, quantity, source="UI add-to-cart order reload"):
+        if self._wait_for_ui_order_addition_confirmation(previous_snapshot, article_row, quantity, source="UI add-to-cart after refresh"):
+            self._apply_ui_order_addition_locally(article_row, quantity)
             return True
 
         raise ValueError("PhoenixPharma: UI add-to-cart did not change the order as expected")

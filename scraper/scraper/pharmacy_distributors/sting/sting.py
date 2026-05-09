@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 
 import requests
 from pharmacy_distributors.common.models import ScrapedProductInfo
-from selenium.common.exceptions import StaleElementReferenceException, TimeoutException, WebDriverException
+from selenium.common.exceptions import ElementClickInterceptedException, StaleElementReferenceException, TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
@@ -29,6 +29,8 @@ logger.setLevel(logging.DEBUG)
 class StingPharma(BrowserCommon):
     REQUEST_TIMEOUT_SECONDS = 30
     PREPARE_RETRY_DELAY_SECONDS = 0.2
+    POSTBACK_SEARCH_ATTEMPTS = 2
+    POSTBACK_SEARCH_RETRY_DELAY_SECONDS = 0.1
     ADD_TO_CART_ATTEMPTS = 3
     ADD_TO_CART_RETRY_DELAY_SECONDS = 0.1
 
@@ -289,37 +291,51 @@ class StingPharma(BrowserCommon):
         return payload
 
     def _search_for_product_via_postback(self, product_name: str) -> Tuple[Optional[dict], Optional[list[str]]]:
-        self.remember_action(f"Searching Sting for product '{product_name}' via postback")
-        response = self._build_requests_session().post(
-            self.browser.current_url,
-            data=self._build_search_postback_payload(product_name),
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                "X-MicrosoftAjax": "Delta=true",
-                "X-Requested-With": "XMLHttpRequest",
-                "Referer": self.browser.current_url,
-                "Origin": "https://web.stingpharma.com",
-                "User-Agent": self.browser.execute_script("return navigator.userAgent"),
-            },
-            timeout=self.REQUEST_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        self._update_postback_form_state(response.text, product_name)
+        last_error = None
+        for attempt in range(1, self.POSTBACK_SEARCH_ATTEMPTS + 1):
+            self.remember_action(f"Searching Sting for product '{product_name}' via postback")
+            try:
+                self._wait_until_ajax_overlay_is_gone()
+                current_url = self.browser.current_url
+                user_agent = self.browser.execute_script("return navigator.userAgent")
+                response = self._build_requests_session().post(
+                    current_url,
+                    data=self._build_search_postback_payload(product_name),
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                        "X-MicrosoftAjax": "Delta=true",
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Referer": current_url,
+                        "Origin": "https://web.stingpharma.com",
+                        "User-Agent": user_agent,
+                    },
+                    timeout=self.REQUEST_TIMEOUT_SECONDS,
+                )
+                response.raise_for_status()
+                self._update_postback_form_state(response.text, product_name)
 
-        parsed_rows = self._parse_search_results_panel_html(response.text)
-        if parsed_rows is None:
-            raise ValueError("StingPharma: Could not parse Sting postback search response")
+                parsed_rows = self._parse_search_results_panel_html(response.text)
+                if parsed_rows is None:
+                    raise ValueError("StingPharma: Could not parse Sting postback search response")
 
-        if len(parsed_rows) == 0:
-            self.lastSearchWasEmpty = True
-            return None, None
+                if len(parsed_rows) == 0:
+                    self.lastSearchWasEmpty = True
+                    return None, None
 
-        if len(parsed_rows) > 1:
-            self.lastSearchWasEmpty = False
-            return None, [row["name"] for row in parsed_rows]
+                if len(parsed_rows) > 1:
+                    self.lastSearchWasEmpty = False
+                    return None, [row["name"] for row in parsed_rows]
 
-        self.lastSearchWasEmpty = False
-        return parsed_rows[0], None
+                self.lastSearchWasEmpty = False
+                return parsed_rows[0], None
+            except StaleElementReferenceException as exc:
+                last_error = exc
+                if attempt != self.POSTBACK_SEARCH_ATTEMPTS:
+                    time.sleep(self.POSTBACK_SEARCH_RETRY_DELAY_SECONDS)
+                    continue
+                raise
+
+        raise last_error if last_error is not None else ValueError("StingPharma: Postback search failed unexpectedly")
 
     def _extract_results_panel_html(self, response_text: str) -> Optional[str]:
         match = re.search(
@@ -401,6 +417,23 @@ class StingPharma(BrowserCommon):
 
         return WebDriverWait(self.browser, timeout, poll_frequency=poll_frequency).until(find_interactable)
 
+    def _wait_until_ajax_overlay_is_gone(self, timeout: float = 1.0, poll_frequency: float = 0.05):
+        def overlay_is_gone(_browser):
+            try:
+                overlays = _browser.find_elements(By.CSS_SELECTOR, "div.raDiv")
+            except StaleElementReferenceException:
+                return False
+
+            for overlay in overlays:
+                try:
+                    if overlay.is_displayed():
+                        return False
+                except StaleElementReferenceException:
+                    return False
+            return True
+
+        WebDriverWait(self.browser, timeout, poll_frequency=poll_frequency).until(overlay_is_gone)
+
     def _restore_search_state_after_add(self):
         WebDriverWait(self.browser, 2, poll_frequency=0.1).until(
             EC.element_to_be_clickable((By.XPATH, self.SEARCH_BOX_XPATH))
@@ -421,13 +454,15 @@ class StingPharma(BrowserCommon):
 
         for attempt in range(1, self.ADD_TO_CART_ATTEMPTS + 1):
             try:
+                self._wait_until_ajax_overlay_is_gone()
                 quantity_input = self._wait_for_interactable_xpath(quantity_xpath, timeout=2)
                 quantity_input.clear()
                 quantity_input.send_keys(str(quantity))
                 self.store_temporary_screenshot()
+                self._wait_until_ajax_overlay_is_gone()
                 self._wait_for_interactable_xpath(add_button_xpath, timeout=2).click()
                 return
-            except (StaleElementReferenceException, TimeoutException) as exc:
+            except (ElementClickInterceptedException, StaleElementReferenceException, TimeoutException) as exc:
                 last_error = exc
                 if attempt != self.ADD_TO_CART_ATTEMPTS:
                     time.sleep(self.ADD_TO_CART_RETRY_DELAY_SECONDS)
@@ -536,6 +571,9 @@ class StingPharma(BrowserCommon):
                 continue
             except Exception as exc:
                 logger.warning("StingPharma: Postback search failed for '%s', falling back to UI flow: %s", productName, exc)
+                self.refresh_page()
+                self._postback_form_state = None
+                self._last_search_result_name = None
 
             element, alternative_names = self._search_for_product(productName)
             if alternative_names is not None:

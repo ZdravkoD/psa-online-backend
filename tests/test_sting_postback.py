@@ -59,6 +59,7 @@ configuration_module.DistributorConfig = type(
 ensure_module("selenium")
 selenium_common = ensure_module("selenium.common")
 selenium_common_exceptions = ensure_module("selenium.common.exceptions")
+selenium_common_exceptions.ElementClickInterceptedException = type("ElementClickInterceptedException", (Exception,), {})
 selenium_common_exceptions.StaleElementReferenceException = type("StaleElementReferenceException", (Exception,), {})
 selenium_common_exceptions.TimeoutException = type("TimeoutException", (Exception,), {})
 selenium_common_exceptions.WebDriverException = type("WebDriverException", (Exception,), {})
@@ -220,6 +221,27 @@ class StingPostbackTests(unittest.TestCase):
         self.assertEqual(sting._last_search_result_name, "TARGET")
         self.assertFalse(sting.lastSearchWasEmpty)
 
+    def test_get_product_name_and_price_refreshes_before_ui_fallback(self):
+        sting = sting_module.StingPharma.__new__(sting_module.StingPharma)
+        sting.refresh_page = mock.Mock()
+        sting._postback_form_state = {"stale": "yes"}
+        sting._last_search_result_name = "OLD"
+        sting._search_for_product_via_postback = mock.Mock(side_effect=RuntimeError("stale browser"))
+        sting._search_for_product = mock.Mock(return_value=(mock.Mock(), None))
+        sting._get_price_header_position = mock.Mock(return_value=3)
+        sting._get_name_header_position = mock.Mock(return_value=1)
+        sting._get_product_name = mock.Mock(return_value="TARGET UI")
+        sting._get_product_price = mock.Mock(return_value=4.2)
+        sting._get_is_product_in_promotion = mock.Mock(return_value=False)
+
+        result = sting_module.StingPharma.get_product_name_and_price(sting, ["TARGET"])
+
+        sting.refresh_page.assert_called_once_with()
+        self.assertIsNone(sting._postback_form_state)
+        self.assertEqual(sting._search_for_product.call_count, 1)
+        self.assertEqual(result.name, "TARGET UI")
+        self.assertEqual(result.price, 4.2)
+
     def test_capture_postback_form_state_ignores_grid_inputs(self):
         sting = sting_module.StingPharma.__new__(sting_module.StingPharma)
         sting._get_name_filter_box_field_name = lambda: "NameFilterBox"
@@ -260,6 +282,7 @@ class StingPostbackTests(unittest.TestCase):
     def test_submit_add_to_cart_retries_on_stale_click(self):
         sting = sting_module.StingPharma.__new__(sting_module.StingPharma)
         sting.store_temporary_screenshot = lambda *_args, **_kwargs: None
+        sting._wait_until_ajax_overlay_is_gone = mock.Mock()
 
         quantity_input = mock.Mock()
         add_button_first = mock.Mock()
@@ -277,6 +300,29 @@ class StingPostbackTests(unittest.TestCase):
         quantity_input.send_keys.assert_called_with("2")
         add_button_first.click.assert_called_once_with()
         add_button_second.click.assert_called_once_with()
+        sleep_mock.assert_called_once_with(sting_module.StingPharma.ADD_TO_CART_RETRY_DELAY_SECONDS)
+
+    def test_submit_add_to_cart_retries_on_intercepted_click(self):
+        sting = sting_module.StingPharma.__new__(sting_module.StingPharma)
+        sting.store_temporary_screenshot = lambda *_args, **_kwargs: None
+        sting._wait_until_ajax_overlay_is_gone = mock.Mock()
+
+        quantity_input = mock.Mock()
+        add_button_first = mock.Mock()
+        add_button_second = mock.Mock()
+        add_button_first.click.side_effect = sting_module.ElementClickInterceptedException("covered")
+        sting._wait_for_interactable_xpath = mock.Mock(
+            side_effect=[quantity_input, add_button_first, quantity_input, add_button_second]
+        )
+
+        with mock.patch.object(sting_module.time, "sleep") as sleep_mock:
+            sting_module.StingPharma._submit_add_to_cart(sting, 1)
+
+        self.assertEqual(quantity_input.clear.call_count, 2)
+        self.assertEqual(quantity_input.send_keys.call_count, 2)
+        add_button_first.click.assert_called_once_with()
+        add_button_second.click.assert_called_once_with()
+        self.assertGreaterEqual(sting._wait_until_ajax_overlay_is_gone.call_count, 2)
         sleep_mock.assert_called_once_with(sting_module.StingPharma.ADD_TO_CART_RETRY_DELAY_SECONDS)
 
     def test_add_product_to_cart_uses_fast_restore_without_refresh(self):
