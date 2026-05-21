@@ -1,0 +1,72 @@
+name: Nightly Scraper Stress Test
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.11"
+  STRESS_TEST_INPUT_FILE: "tests/fixtures/nightly_stress_test_input.xlsx"
+  STRESS_TEST_PHARMACY_ID: "2075077"
+
+jobs:
+  nightly-stress-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        env:
+          PHOENIX_CONFIG: ${{ secrets.PHOENIX_CONFIG }}
+          STING_CONFIG: ${{ secrets.STING_CONFIG }}
+        run: |
+          if [ -z "$PHOENIX_CONFIG" ]; then
+            echo "Missing required secret: PHOENIX_CONFIG"
+            exit 1
+          fi
+          if [ -z "$STING_CONFIG" ]; then
+            echo "Missing required secret: STING_CONFIG"
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install scraper dependencies
+        working-directory: scraper
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify input fixture exists
+        run: |
+          test -f "${STRESS_TEST_INPUT_FILE}"
+
+      - name: Run nightly stress test
+        env:
+          PHOENIX_CONFIG: ${{ secrets.PHOENIX_CONFIG }}
+          STING_CONFIG: ${{ secrets.STING_CONFIG }}
+        run: |
+          python scraper/scripts/run_local_debug.py \
+            stress-test \
+            --pharmacy-id "${STRESS_TEST_PHARMACY_ID}" \
+            --distributor phoenix \
+            --distributor sting \
+            --input-file "${STRESS_TEST_INPUT_FILE}" \
+            --iterations 1
+
+      - name: Upload scraper diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-scraper-stress-test-artifacts
+          if-no-files-found: ignore
+          path: |
+            app_*.log
+            Screenshots/

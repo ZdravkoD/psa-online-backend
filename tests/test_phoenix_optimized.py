@@ -269,6 +269,23 @@ class PhoenixOptimizedPayloadTests(unittest.TestCase):
         phoenix._search_for_product.assert_not_called()
         phoenix._apply_ui_order_addition_locally.assert_not_called()
 
+    def test_clear_order_items_commits_empty_order_and_resets_local_state(self):
+        phoenix = phoenix_optimized_module.PhoenixPharmaOptimized.__new__(phoenix_optimized_module.PhoenixPharmaOptimized)
+        phoenix.remember_action = mock.Mock()
+        phoenix._article_rows_by_name = {"TARGET": {"article_id": "123"}}
+        phoenix._ui_order_page_loaded = True
+        phoenix._ensure_order_initialized = mock.Mock(return_value={"order_id": "15580946"})
+        phoenix._commit_order_items = mock.Mock()
+
+        result = phoenix_optimized_module.PhoenixPharmaOptimized.clear_order_items(phoenix)
+
+        self.assertTrue(result)
+        phoenix.remember_action.assert_called_once_with("Clearing Phoenix order items via API")
+        phoenix._ensure_order_initialized.assert_called_once_with()
+        phoenix._commit_order_items.assert_called_once_with([])
+        self.assertEqual(phoenix._article_rows_by_name, {})
+        self.assertFalse(phoenix._ui_order_page_loaded)
+
 
 if __name__ == "__main__":
     unittest.main()

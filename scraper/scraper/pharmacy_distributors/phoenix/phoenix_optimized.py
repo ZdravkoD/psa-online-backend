@@ -790,6 +790,14 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         self._current_order_row = row
         self._order_item_rows = self._decode_order_item_rows(row.get("xml_item_list"))
 
+    def clear_order_items(self):
+        self.remember_action("Clearing Phoenix order items via API")
+        self._ensure_order_initialized()
+        self._commit_order_items([])
+        self._article_rows_by_name = {}
+        self._ui_order_page_loaded = False
+        return True
+
     def _ensure_ui_order_page_loaded(self, *, force_reload: bool = False):
         if force_reload or not self._ui_order_page_loaded:
             self.refresh_page()

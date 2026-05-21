@@ -20,6 +20,7 @@ It supports:
 - `phoenix-login`: narrow browser/login bootstrap debug
 - `sting-login`: same for Sting
 - `task`: full local `TaskHandler` run with a synthetic task payload and no Azure Service Bus dependency
+- `stress-test`: full-order run per distributor with optional Excel input and cleanup after each iteration
 
 ## Required config
 
@@ -112,6 +113,42 @@ Expected JSON input:
 This path monkeypatches:
 - `TaskUpdatePublisher` to print progress/success/error locally
 - `AzureBlobClient` to no-op, so local failures do not depend on Azure blob upload
+
+Excel file path:
+
+```bash
+cd /Users/zdravkodonev/projects/psa-online-backend
+scraper/.venv/bin/python scraper/scripts/run_local_debug.py \
+  --distributor-config-file /absolute/path/to/distributor-config.json \
+  task \
+  --pharmacy-id tolstoy \
+  --distributor phoenix \
+  --input-file /absolute/path/to/input.xlsx \
+  --cleanup-after
+```
+
+### 3. Run a repeatable full-order stress test
+
+Use this when you want a rerunnable smoke/stress check that exercises the full input file and then clears the created cart/order state.
+
+```bash
+cd /Users/zdravkodonev/projects/psa-online-backend
+scraper/.venv/bin/python scraper/scripts/run_local_debug.py \
+  --distributor-config-file /absolute/path/to/distributor-config.json \
+  stress-test \
+  --pharmacy-id tolstoy \
+  --distributor phoenix \
+  --distributor sting \
+  --input-file /absolute/path/to/input.xlsx \
+  --iterations 1 \
+  --stop-on-failure
+```
+
+Important behavior:
+- `stress-test` runs each distributor independently, not as one combined price-comparison task
+- each iteration exits non-zero on task failure, which makes it CI-friendly
+- Sting cleanup uses `clearCart()`
+- Phoenix cleanup clears the current API-backed order items after the run
 
 ## Important repo facts
 
