@@ -53,5 +53,23 @@ class RunLocalDebugPayloadTests(unittest.TestCase):
                 run_local_debug_module._build_local_task_payload(args)
 
 
+class RunLocalDebugPatchingTests(unittest.TestCase):
+    def test_patch_local_blob_clients_updates_task_handler_and_excel_worker_modules(self):
+        task_handler_module = SimpleNamespace(AzureBlobClient="old-task-handler")
+        excel_worker_module = SimpleNamespace(AzureBlobClient="old-excel-worker")
+        modules = {
+            "task_handler_module": task_handler_module,
+            "excel_worker_module": excel_worker_module,
+        }
+
+        class FakeLocalAzureBlobClient:
+            pass
+
+        run_local_debug_module._patch_local_blob_clients(modules, FakeLocalAzureBlobClient)
+
+        self.assertIs(task_handler_module.AzureBlobClient, FakeLocalAzureBlobClient)
+        self.assertIs(excel_worker_module.AzureBlobClient, FakeLocalAzureBlobClient)
+
+
 if __name__ == "__main__":
     unittest.main()

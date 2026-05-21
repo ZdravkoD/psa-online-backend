@@ -284,7 +284,7 @@ class TaskHandler:
         try:
             self.file_worker.open_file(self.taskItem.file_data)
         except Exception as e:
-            logger.error("TaskHandler: Couldn't open the file: ", e)
+            logger.error("TaskHandler: Couldn't open the file: %s", e)
             self.task_update_publisher.publish_error(
                 taskItem=self.taskItem,
                 message=build_task_error_summary(
@@ -300,7 +300,7 @@ class TaskHandler:
         try:
             self.file_worker.validate_input()
         except Exception as e:
-            logger.error("TaskHandler: Couldn't validate the input file: ", e)
+            logger.error("TaskHandler: Couldn't validate the input file: %s", e)
             self.task_update_publisher.publish_error(
                 taskItem=self.taskItem,
                 message=build_task_error_summary(
@@ -319,7 +319,7 @@ class TaskHandler:
             try:
                 row_info: RowInfo = self.file_worker.get_next_row()
             except Exception as e:
-                logger.error("TaskHandler: Couldn't get next row: ", e)
+                logger.error("TaskHandler: Couldn't get next row: %s", e)
                 self.task_update_publisher.publish_error(
                     taskItem=self.taskItem,
                     message=build_task_error_summary(
@@ -338,8 +338,7 @@ class TaskHandler:
             try:
                 self._get_custom_product_name_variations(row_info)
             except Exception as e:
-                logger.error(
-                    "TaskHandler: Couldn't get custom product name variations: ", e)
+                logger.error("TaskHandler: Couldn't get custom product name variations: %s", e)
                 self.task_update_publisher.publish_error(
                     taskItem=self.taskItem,
                     message=build_task_error_summary(
@@ -417,7 +416,7 @@ class TaskHandler:
                 try:
                     scraped_product_info: ScrapedProductInfo = scraper.get_product_name_and_price(productSearchNames)
                 except Exception as e:
-                    logger.error("TaskHandler: Couldn't get product name and price: ", e)
+                    logger.error("TaskHandler: Couldn't get product name and price: %s", e)
                     return None
             if scraped_product_info.price != math.inf or len(scraped_product_info.alternative_names) > 0:
                 return ProductInfo(

@@ -144,12 +144,14 @@ def _import_scraper_modules() -> dict[str, Any]:
 
     setup_logging()
 
+    import files.excel_worker as excel_worker_module
     import task_handler.task_handler as task_handler_module
     from messaging.messaging import ScraperTaskItem
     from pharmacy_distributors.phoenix.phoenix_optimized import PhoenixPharmaOptimized
     from pharmacy_distributors.sting.sting import StingPharma
 
     return {
+        "excel_worker_module": excel_worker_module,
         "task_handler_module": task_handler_module,
         "ScraperTaskItem": ScraperTaskItem,
         "PhoenixPharmaOptimized": PhoenixPharmaOptimized,
@@ -257,6 +259,11 @@ def _cleanup_scraper_state(scraper: Any) -> str:
     raise ValueError(f"No cleanup hook is implemented for scraper '{getattr(scraper, 'name', type(scraper).__name__)}'")
 
 
+def _patch_local_blob_clients(modules: dict[str, Any], local_azure_blob_client: type) -> None:
+    modules["task_handler_module"].AzureBlobClient = local_azure_blob_client
+    modules["excel_worker_module"].AzureBlobClient = local_azure_blob_client
+
+
 def _run_task(args: argparse.Namespace, modules: dict[str, Any]) -> int:
     _ensure_required_config(args.distributors)
     input_file = getattr(args, "input_file", None)
@@ -315,7 +322,7 @@ def _run_task(args: argparse.Namespace, modules: dict[str, Any]) -> int:
 
     task_handler_module = modules["task_handler_module"]
     task_handler_module.TaskUpdatePublisher = LocalTaskUpdatePublisher
-    task_handler_module.AzureBlobClient = LocalAzureBlobClient
+    _patch_local_blob_clients(modules, LocalAzureBlobClient)
 
     LocalTaskUpdatePublisher.events = []
     payload = _build_local_task_payload(args)
