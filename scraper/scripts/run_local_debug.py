@@ -259,6 +259,14 @@ def _cleanup_scraper_state(scraper: Any) -> str:
     raise ValueError(f"No cleanup hook is implemented for scraper '{getattr(scraper, 'name', type(scraper).__name__)}'")
 
 
+def _verify_cleanup_state(scraper: Any) -> str:
+    if hasattr(scraper, "verify_cleanup_state"):
+        if scraper.verify_cleanup_state():
+            return f"verified {getattr(scraper, 'get_name', lambda: type(scraper).__name__)()} cleanup state"
+        raise ValueError(f"{getattr(scraper, 'get_name', lambda: type(scraper).__name__)()}: cleanup verification failed")
+    raise ValueError(f"No cleanup verification hook is implemented for scraper '{getattr(scraper, 'name', type(scraper).__name__)}'")
+
+
 def _patch_local_blob_clients(modules: dict[str, Any], local_azure_blob_client: type) -> None:
     modules["task_handler_module"].AzureBlobClient = local_azure_blob_client
     modules["excel_worker_module"].AzureBlobClient = local_azure_blob_client
@@ -410,6 +418,12 @@ def _run_task(args: argparse.Namespace, modules: dict[str, Any]) -> int:
                         "type": "cleanup",
                         "scraper": getattr(scraper, "get_name", lambda: type(scraper).__name__)(),
                         "result": cleanup_result,
+                    }, ensure_ascii=False, indent=2))
+                    verification_result = _verify_cleanup_state(scraper)
+                    print(json.dumps({
+                        "type": "cleanup_verification",
+                        "scraper": getattr(scraper, "get_name", lambda: type(scraper).__name__)(),
+                        "result": verification_result,
                     }, ensure_ascii=False, indent=2))
                 except Exception as exc:
                     cleanup_errors.append(

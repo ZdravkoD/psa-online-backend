@@ -84,5 +84,26 @@ class RunLocalDebugPatchingTests(unittest.TestCase):
         self.assertIs(task_handler_module.CosmosDbClient, FakeLocalCosmosDbClient)
 
 
+class RunLocalDebugCleanupTests(unittest.TestCase):
+    def test_verify_cleanup_state_uses_scraper_hook(self):
+        scraper = SimpleNamespace(
+            get_name=lambda: "Phoenix",
+            verify_cleanup_state=lambda: True,
+        )
+
+        result = run_local_debug_module._verify_cleanup_state(scraper)
+
+        self.assertEqual(result, "verified Phoenix cleanup state")
+
+    def test_verify_cleanup_state_raises_when_hook_reports_failure(self):
+        scraper = SimpleNamespace(
+            get_name=lambda: "Phoenix",
+            verify_cleanup_state=lambda: False,
+        )
+
+        with self.assertRaisesRegex(ValueError, "cleanup verification failed"):
+            run_local_debug_module._verify_cleanup_state(scraper)
+
+
 if __name__ == "__main__":
     unittest.main()

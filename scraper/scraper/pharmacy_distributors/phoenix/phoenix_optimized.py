@@ -14,6 +14,7 @@ import xmltodict
 from pharmacy_distributors.common.models import ScrapedProductInfo
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 from pharmacy_distributors.phoenix.phoenix import PhoenixPharma
@@ -32,6 +33,7 @@ class PhoenixPharmaOptimized(PhoenixPharma):
     ORDER_CONFIRMATION_RELOAD_DELAY_SECONDS = 0.2
     UI_ORDER_CONFIRMATION_TIMEOUT_SECONDS = 1.0
     UI_ORDER_CONFIRMATION_POLL_SECONDS = 0.1
+    ORDER_DELETE_CONFIRMATION_TIMEOUT_SECONDS = 2.0
 
     def __init__(self, pharmacyID: str, shouldInitBrowser=True):
         super().__init__(pharmacyID, shouldInitBrowser)
@@ -695,6 +697,9 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         total_quantity = sum(int(self._xml_safe(item.get("quantity", "0")) or "0") for item in items)
         total_base_price = sum(float(self._xml_safe(item.get("BasePrice", "0")) or "0") * int(self._xml_safe(item.get("quantity", "0")) or "0") for item in items)
         total_sale_price = sum(float(self._xml_safe(item.get("SalePrice", "0")) or "0") * int(self._xml_safe(item.get("quantity", "0")) or "0") for item in items)
+        total_base_price_text = f"{total_base_price:.2f}"
+        total_sale_price_text = f"{total_sale_price:.2f}"
+        total_quantity_text = str(total_quantity)
 
         algo_parts = []
         for index, item in enumerate(items, start=1):
@@ -729,9 +734,9 @@ class PhoenixPharmaOptimized(PhoenixPharma):
             f"<order_crmode>{self._xml_safe(order_row.get('order_crmode', 'create'))}</order_crmode>"
             f"<deleted>{self._xml_safe(order_row.get('deleted', '0'))}</deleted>"
             f"<order_item_count>{len(items)}</order_item_count>"
-            f"<TotalQuantity>{total_quantity}</TotalQuantity>"
-            f"<TotalBasePrice>{total_base_price:.2f}</TotalBasePrice>"
-            f"<TotalSalePrice>{total_sale_price:.2f}</TotalSalePrice>"
+            f"<TotalQuantity>{total_quantity_text}</TotalQuantity>"
+            f"<TotalBasePrice>{total_base_price_text}</TotalBasePrice>"
+            f"<TotalSalePrice>{total_sale_price_text}</TotalSalePrice>"
             f"<order_state_description>{escape(self._xml_safe(order_row.get('order_state_description', 'CREATED')))}</order_state_description>"
             f"<order_branch_number>{self._xml_safe(order_row.get('order_branch_number'))}</order_branch_number>"
             f"<order_partner_number>{self._xml_safe(order_row.get('order_partner_number'))}</order_partner_number>"
@@ -761,11 +766,11 @@ class PhoenixPharmaOptimized(PhoenixPharma):
             f"<order_comment>{escape(self._xml_safe(order_row.get('order_comment')))}</order_comment>"
             f"<LastStatusCheck>{escape(self._xml_safe(order_row.get('LastStatusCheck')))}</LastStatusCheck>"
             f"<order_ordered_by>{escape(self._xml_safe(order_row.get('order_ordered_by')))}</order_ordered_by>"
-            f"<tr_order_item_count>{self._xml_safe(order_row.get('tr_order_item_count', '0'))}</tr_order_item_count>"
-            f"<tr_TotalQuantity>{escape(self._xml_safe(order_row.get('tr_TotalQuantity')))}</tr_TotalQuantity>"
-            f"<tr_TotalBasePrice>{self._xml_safe(order_row.get('tr_TotalBasePrice', '0.00'))}</tr_TotalBasePrice>"
-            f"<tr_TotalSalePrice>{self._xml_safe(order_row.get('tr_TotalSalePrice', '0.00'))}</tr_TotalSalePrice>"
-            f"<FullOrderValue>{escape(self._xml_safe(order_row.get('FullOrderValue')))}</FullOrderValue>"
+            f"<tr_order_item_count>{len(items)}</tr_order_item_count>"
+            f"<tr_TotalQuantity>{total_quantity_text}</tr_TotalQuantity>"
+            f"<tr_TotalBasePrice>{total_base_price_text}</tr_TotalBasePrice>"
+            f"<tr_TotalSalePrice>{total_sale_price_text}</tr_TotalSalePrice>"
+            f"<FullOrderValue>{total_sale_price_text}</FullOrderValue>"
             f"<id>BgShop.model.order.OrderHeader-{max(len(items), 1) + 2}</id>"
             "</row></dataset>"
         )
@@ -792,11 +797,82 @@ class PhoenixPharmaOptimized(PhoenixPharma):
 
     def clear_order_items(self):
         self.remember_action("Clearing Phoenix order items via API")
-        self._ensure_order_initialized()
+        order_row = self._ensure_order_initialized()
+        order_id = self._xml_safe(order_row.get("order_id")).strip()
         self._commit_order_items([])
+        if not self.verify_cleanup_state():
+            logger.warning(
+                "PhoenixPharmaOptimized: API cleanup left items in order %s, falling back to UI order delete",
+                order_id,
+            )
+            self._delete_order_via_ui(order_id)
+            self._current_order_row = None
+            self._order_item_rows = []
         self._article_rows_by_name = {}
         self._ui_order_page_loaded = False
         return True
+
+    def verify_cleanup_state(self) -> bool:
+        if self._current_order_row is None:
+            return True
+
+        try:
+            self._reload_order_state()
+        except ValueError as exc:
+            if "was not found during reload" in str(exc):
+                return True
+            raise
+        return len(self._order_item_rows) == 0
+
+    def _open_order_list(self):
+        self._wait_until_mask_is_gone()
+        WebDriverWait(self.browser, 10).until(
+            EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Поръчка')]"))
+        ).click()
+        self._wait_until_mask_is_gone()
+        WebDriverWait(self.browser, 10).until(
+            EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Списък поръчки')]"))
+        ).click()
+        self._wait_until_mask_is_gone()
+
+    def _delete_order_via_ui(self, order_id: str):
+        self.remember_action(f"Deleting Phoenix order {order_id} via UI")
+        self._open_order_list()
+
+        row_xpath = (
+            "//div[@class='x-grid-item-container']//table"
+            f"[.//div[contains(@class, 'x-grid-cell-inner') and normalize-space(text())={self._xpath_literal(order_id)}]]"
+        )
+        delete_xpath = row_xpath + "//div[contains(@class, 'x-action-col-icon') and contains(@class, 'fa-trash')]"
+
+        row = WebDriverWait(self.browser, 10).until(
+            EC.element_to_be_clickable((By.XPATH, row_xpath))
+        )
+        self.browser.execute_script("arguments[0].scrollIntoView(true);", row)
+        self.browser.find_element(By.XPATH, delete_xpath).click()
+
+        try:
+            confirm_button = WebDriverWait(
+                self.browser,
+                self.ORDER_DELETE_CONFIRMATION_TIMEOUT_SECONDS,
+            ).until(
+                EC.element_to_be_clickable(
+                    (
+                        By.XPATH,
+                        "//span[normalize-space(text())='Да' or normalize-space(text())='Yes' or normalize-space(text())='OK']",
+                    )
+                )
+            )
+            confirm_button.click()
+        except TimeoutException:
+            logger.warning(
+                "PhoenixPharmaOptimized: No confirmation button appeared while deleting order %s; continuing with row disappearance check",
+                order_id,
+            )
+
+        WebDriverWait(self.browser, 10).until(
+            lambda _browser: len(_browser.find_elements(By.XPATH, row_xpath)) == 0
+        )
 
     def _ensure_ui_order_page_loaded(self, *, force_reload: bool = False):
         if force_reload or not self._ui_order_page_loaded:

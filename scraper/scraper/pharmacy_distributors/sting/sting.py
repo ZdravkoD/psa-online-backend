@@ -82,6 +82,22 @@ class StingPharma(BrowserCommon):
             logger.info("ClearCart error:")
             logger.info(e)
 
+    def verify_cleanup_state(self) -> bool:
+        self.remember_action("Verifying Sting cart is empty")
+        self.browser.refresh()
+        try:
+            self._wait_until_ajax_overlay_is_gone()
+        except Exception:
+            pass
+
+        try:
+            WebDriverWait(self.browser, 1, poll_frequency=0.1).until(
+                EC.element_to_be_clickable((By.XPATH, SELECTOR_CLEAR_CART))
+            )
+            return False
+        except TimeoutException:
+            return True
+
     def prepare_for_order(self):
         try:
             self._prepare_for_order_once()
