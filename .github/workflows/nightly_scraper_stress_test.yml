@@ -1,6 +1,11 @@
 name: Nightly Scraper Stress Test
 
 on:
+  push:
+    branches:
+      - staging
+    paths:
+      - ".github/workflows/nightly_scraper_stress_test.yml"
   schedule:
     - cron: "0 2 * * *"
   workflow_dispatch:
