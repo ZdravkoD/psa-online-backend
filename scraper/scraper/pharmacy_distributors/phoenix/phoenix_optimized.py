@@ -825,15 +825,12 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         return len(self._order_item_rows) == 0
 
     def _open_order_list(self):
-        self._wait_until_mask_is_gone()
         WebDriverWait(self.browser, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Поръчка')]"))
         ).click()
-        self._wait_until_mask_is_gone()
         WebDriverWait(self.browser, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Списък поръчки')]"))
         ).click()
-        self._wait_until_mask_is_gone()
 
     def _delete_order_via_ui(self, order_id: str):
         self.remember_action(f"Deleting Phoenix order {order_id} via UI")
@@ -859,7 +856,9 @@ class PhoenixPharmaOptimized(PhoenixPharma):
                 EC.element_to_be_clickable(
                     (
                         By.XPATH,
-                        "//span[normalize-space(text())='Да' or normalize-space(text())='Yes' or normalize-space(text())='OK']",
+                        "//a[.//span[normalize-space(text())='Да' or normalize-space(text())='Yes' or normalize-space(text())='OK']]"
+                        "| //span[normalize-space(text())='Да' or normalize-space(text())='Yes' or normalize-space(text())='OK']"
+                        "/ancestor::*[@role='button' or self::a][1]",
                     )
                 )
             )

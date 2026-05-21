@@ -427,7 +427,7 @@ def _run_task(args: argparse.Namespace, modules: dict[str, Any]) -> int:
                     }, ensure_ascii=False, indent=2))
                 except Exception as exc:
                     cleanup_errors.append(
-                        f"{getattr(scraper, 'get_name', lambda: type(scraper).__name__)()}: {exc}"
+                        f"{getattr(scraper, 'get_name', lambda: type(scraper).__name__)()}: {type(exc).__name__}: {exc}"
                     )
     finally:
         for scraper in getattr(handler, "scrapers", []):
