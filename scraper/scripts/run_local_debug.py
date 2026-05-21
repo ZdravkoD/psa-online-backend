@@ -264,6 +264,10 @@ def _patch_local_blob_clients(modules: dict[str, Any], local_azure_blob_client: 
     modules["excel_worker_module"].AzureBlobClient = local_azure_blob_client
 
 
+def _patch_local_cosmos_client(modules: dict[str, Any], local_cosmos_client: type) -> None:
+    modules["task_handler_module"].CosmosDbClient = local_cosmos_client
+
+
 def _run_task(args: argparse.Namespace, modules: dict[str, Any]) -> int:
     _ensure_required_config(args.distributors)
     input_file = getattr(args, "input_file", None)
@@ -320,9 +324,67 @@ def _run_task(args: argparse.Namespace, modules: dict[str, Any]) -> int:
         def upload_blob_to_output_container(self, *_args, **_kwargs):
             return None
 
+    class LocalCosmosDbClient:
+        _collections: dict[str, list[dict[str, Any]]] = {}
+        _next_id = 1
+
+        def read_items(
+            self,
+            collection_name: str,
+            filter: dict[str, Any] | None = None,
+            projection: dict[str, Any] | None = None,
+            sort: dict[str, Any] | None = None,
+            skip: int | None = 0,
+            limit: int | None = 0,
+        ) -> list[dict[str, Any]]:
+            del sort
+            items = [item.copy() for item in self._collections.get(collection_name, [])]
+
+            if filter and "original_product_name" in filter:
+                original_product_name_filter = filter["original_product_name"]
+                if isinstance(original_product_name_filter, dict) and "$in" in original_product_name_filter:
+                    allowed_names = set(original_product_name_filter["$in"])
+                    items = [
+                        item for item in items
+                        if item.get("original_product_name") in allowed_names
+                    ]
+
+            if projection:
+                projected_items = []
+                for item in items:
+                    projected_item = {
+                        key: value for key, value in item.items()
+                        if key == "id" or projection.get(key)
+                    }
+                    projected_items.append(projected_item)
+                items = projected_items
+
+            if skip:
+                items = items[skip:]
+            if limit:
+                items = items[:limit]
+            return items
+
+        def create_item(self, collection_name: str, document: dict[str, Any]) -> str:
+            item_id = str(self._next_id)
+            type(self)._next_id += 1
+            stored_document = document.copy()
+            stored_document["id"] = item_id
+            self._collections.setdefault(collection_name, []).append(stored_document)
+            return item_id
+
+        def update_item(self, collection_name: str, item_id: str, document: dict[str, Any]) -> int:
+            for item in self._collections.get(collection_name, []):
+                if item.get("id") == item_id:
+                    item.update(document)
+                    return 1
+            return 0
+
     task_handler_module = modules["task_handler_module"]
     task_handler_module.TaskUpdatePublisher = LocalTaskUpdatePublisher
     _patch_local_blob_clients(modules, LocalAzureBlobClient)
+    if not os.getenv("AZURE_COSMOS_DB_CONNECTION_STRING"):
+        _patch_local_cosmos_client(modules, LocalCosmosDbClient)
 
     LocalTaskUpdatePublisher.events = []
     payload = _build_local_task_payload(args)
