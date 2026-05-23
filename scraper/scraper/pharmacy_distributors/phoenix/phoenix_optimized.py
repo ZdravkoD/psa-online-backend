@@ -951,12 +951,11 @@ class PhoenixPharmaOptimized(PhoenixPharma):
 
     def _add_product_to_cart_via_ui(self, quantity: int):
         logger.info("PhoenixPharma:add_product_to_cart(): quantity=%s", quantity)
-        plus_button = self.browser.find_element(By.XPATH, self.PRODUCT_PLUS_BUTTON_XPATH)
         for _ in range(quantity):
-            plus_button.click()
+            self._click_xpath_when_ready(self.PRODUCT_PLUS_BUTTON_XPATH, timeout=5)
 
         self.store_temporary_screenshot()
-        self.browser.find_element(By.XPATH, "//span[text()='Добави']").click()
+        self._click_xpath_when_ready("//span[text()='Добави']", timeout=5)
         return True
 
     def _apply_ui_order_addition_locally(self, article_row: dict[str, Any], quantity: int):

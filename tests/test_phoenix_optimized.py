@@ -308,6 +308,26 @@ class PhoenixOptimizedPayloadTests(unittest.TestCase):
         self.assertEqual(phoenix._wait_for_order_addition_confirmation.call_count, 2)
         phoenix._apply_ui_order_addition_locally.assert_not_called()
 
+    def test_add_product_to_cart_via_ui_uses_retry_click_helper(self):
+        phoenix = phoenix_optimized_module.PhoenixPharmaOptimized.__new__(phoenix_optimized_module.PhoenixPharmaOptimized)
+        phoenix.PRODUCT_PLUS_BUTTON_XPATH = "//span[text()='+']"
+        phoenix._click_xpath_when_ready = mock.Mock()
+        phoenix.store_temporary_screenshot = mock.Mock()
+
+        result = phoenix_optimized_module.PhoenixPharmaOptimized._add_product_to_cart_via_ui(phoenix, 3)
+
+        self.assertTrue(result)
+        self.assertEqual(
+            phoenix._click_xpath_when_ready.call_args_list,
+            [
+                mock.call(phoenix.PRODUCT_PLUS_BUTTON_XPATH, timeout=5),
+                mock.call(phoenix.PRODUCT_PLUS_BUTTON_XPATH, timeout=5),
+                mock.call(phoenix.PRODUCT_PLUS_BUTTON_XPATH, timeout=5),
+                mock.call("//span[text()='Добави']", timeout=5),
+            ],
+        )
+        phoenix.store_temporary_screenshot.assert_called_once_with()
+
     def test_add_product_to_cart_increases_existing_order_row_for_duplicate_product(self):
         phoenix = phoenix_optimized_module.PhoenixPharmaOptimized.__new__(phoenix_optimized_module.PhoenixPharmaOptimized)
         phoenix.remember_action = lambda *_args, **_kwargs: None
