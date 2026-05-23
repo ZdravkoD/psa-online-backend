@@ -12,7 +12,11 @@ from xml.sax.saxutils import escape
 import requests
 import xmltodict
 from pharmacy_distributors.common.models import ScrapedProductInfo
-from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
+from selenium.common.exceptions import (
+    ElementClickInterceptedException,
+    StaleElementReferenceException,
+    TimeoutException,
+)
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
@@ -34,6 +38,7 @@ class PhoenixPharmaOptimized(PhoenixPharma):
     UI_ORDER_CONFIRMATION_TIMEOUT_SECONDS = 1.0
     UI_ORDER_CONFIRMATION_POLL_SECONDS = 0.1
     ORDER_DELETE_CONFIRMATION_TIMEOUT_SECONDS = 2.0
+    ORDER_DELETE_MASK_TIMEOUT_SECONDS = 10.0
     ORDER_DELETE_ATTEMPTS = 3
     ORDER_DELETE_RETRY_DELAY_SECONDS = 0.5
 
@@ -827,12 +832,15 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         return len(self._order_item_rows) == 0
 
     def _open_order_list(self):
+        self._wait_until_mask_is_gone(timeout=self.ORDER_DELETE_MASK_TIMEOUT_SECONDS)
         WebDriverWait(self.browser, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Поръчка')]"))
         ).click()
+        self._wait_until_mask_is_gone(timeout=self.ORDER_DELETE_MASK_TIMEOUT_SECONDS)
         WebDriverWait(self.browser, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Списък поръчки')]"))
         ).click()
+        self._wait_until_mask_is_gone(timeout=self.ORDER_DELETE_MASK_TIMEOUT_SECONDS)
 
     def _get_order_row_xpath(self, order_id: str) -> str:
         return (
@@ -843,41 +851,53 @@ class PhoenixPharmaOptimized(PhoenixPharma):
     def _get_order_delete_xpath(self, order_id: str) -> str:
         return self._get_order_row_xpath(order_id) + "//div[contains(@class, 'x-action-col-icon') and contains(@class, 'fa-trash')]"
 
-    def _find_order_delete_confirmation_button(self):
-        confirmation_xpath = (
+    def _get_order_delete_confirmation_xpath(self) -> str:
+        return (
             "//a[.//span[normalize-space(text())='Да' or normalize-space(text())='Yes' or normalize-space(text())='OK']]"
             "| //span[normalize-space(text())='Да' or normalize-space(text())='Yes' or normalize-space(text())='OK']"
             "/ancestor::*[@role='button' or self::a][1]"
         )
-        for button in self.browser.find_elements(By.XPATH, confirmation_xpath):
+
+    def _click_xpath_when_ready(self, xpath: str, timeout: float):
+        last_error: Exception | None = None
+
+        for _attempt in range(3):
             try:
-                if button.is_displayed() and button.is_enabled():
-                    return button
-            except StaleElementReferenceException:
-                continue
-        return None
+                self._wait_until_mask_is_gone(timeout=self.ORDER_DELETE_MASK_TIMEOUT_SECONDS)
+                element = self._wait_for_interactable_xpath(xpath, timeout=timeout, poll_frequency=0.1)
+                self.browser.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+                self._wait_until_mask_is_gone(timeout=self.ORDER_DELETE_MASK_TIMEOUT_SECONDS)
+                try:
+                    element.click()
+                except ElementClickInterceptedException:
+                    self._wait_until_mask_is_gone(timeout=self.ORDER_DELETE_MASK_TIMEOUT_SECONDS)
+                    self.browser.execute_script("arguments[0].click();", element)
+                return
+            except (ElementClickInterceptedException, StaleElementReferenceException, TimeoutException) as exc:
+                last_error = exc
+                time.sleep(0.2)
+
+        if last_error is not None:
+            raise last_error
+        raise TimeoutException(f"PhoenixPharmaOptimized: Could not click element for xpath {xpath}")
 
     def _delete_order_via_ui(self, order_id: str):
         self.remember_action(f"Deleting Phoenix order {order_id} via UI")
         row_xpath = self._get_order_row_xpath(order_id)
         delete_xpath = self._get_order_delete_xpath(order_id)
+        confirmation_xpath = self._get_order_delete_confirmation_xpath()
         last_error: Exception | None = None
 
         for attempt in range(1, self.ORDER_DELETE_ATTEMPTS + 1):
             try:
                 self._open_order_list()
-                row = WebDriverWait(self.browser, 10).until(
-                    EC.element_to_be_clickable((By.XPATH, row_xpath))
-                )
-                self.browser.execute_script("arguments[0].scrollIntoView(true);", row)
-                self.browser.find_element(By.XPATH, delete_xpath).click()
+                self._click_xpath_when_ready(delete_xpath, timeout=10)
 
                 try:
-                    confirm_button = WebDriverWait(
-                        self.browser,
-                        self.ORDER_DELETE_CONFIRMATION_TIMEOUT_SECONDS,
-                    ).until(lambda _browser: self._find_order_delete_confirmation_button())
-                    confirm_button.click()
+                    self._click_xpath_when_ready(
+                        confirmation_xpath,
+                        timeout=self.ORDER_DELETE_CONFIRMATION_TIMEOUT_SECONDS,
+                    )
                 except TimeoutException:
                     logger.warning(
                         "PhoenixPharmaOptimized: No confirmation button appeared while deleting order %s on attempt %s/%s; continuing with row disappearance check",
@@ -886,17 +906,19 @@ class PhoenixPharmaOptimized(PhoenixPharma):
                         self.ORDER_DELETE_ATTEMPTS,
                     )
 
+                self._wait_until_mask_is_gone(timeout=self.ORDER_DELETE_MASK_TIMEOUT_SECONDS)
                 WebDriverWait(self.browser, 10).until(
                     lambda _browser: len(_browser.find_elements(By.XPATH, row_xpath)) == 0
                 )
                 return
-            except StaleElementReferenceException as exc:
+            except (ElementClickInterceptedException, StaleElementReferenceException) as exc:
                 last_error = exc
                 logger.warning(
-                    "PhoenixPharmaOptimized: Order delete attempt %s/%s hit a stale element for order %s",
+                    "PhoenixPharmaOptimized: Order delete attempt %s/%s hit an interactive UI error for order %s: %s",
                     attempt,
                     self.ORDER_DELETE_ATTEMPTS,
                     order_id,
+                    exc.__class__.__name__,
                 )
             except TimeoutException as exc:
                 last_error = exc
