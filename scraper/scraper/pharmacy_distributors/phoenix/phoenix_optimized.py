@@ -21,7 +21,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-from pharmacy_distributors.phoenix.phoenix import PhoenixPharma
+from pharmacy_distributors.phoenix.phoenix import PhoenixPharma, SELECTOR_VISIBLE_MASK
 
 # Create a logger for this module
 logger = logging.getLogger(__name__)
@@ -37,6 +37,7 @@ class PhoenixPharmaOptimized(PhoenixPharma):
     ORDER_CONFIRMATION_RELOAD_DELAY_SECONDS = 0.2
     UI_ORDER_CONFIRMATION_TIMEOUT_SECONDS = 1.0
     UI_ORDER_CONFIRMATION_POLL_SECONDS = 0.1
+    ADD_TO_CART_UI_MASK_TIMEOUT_SECONDS = 0.5
     ORDER_DELETE_CONFIRMATION_TIMEOUT_SECONDS = 2.0
     ORDER_DELETE_MASK_TIMEOUT_SECONDS = 10.0
     ORDER_DELETE_ATTEMPTS = 3
@@ -858,19 +859,28 @@ class PhoenixPharmaOptimized(PhoenixPharma):
             "/ancestor::*[@role='button' or self::a][1]"
         )
 
-    def _click_xpath_when_ready(self, xpath: str, timeout: float):
+    def _wait_until_mask_is_gone_quietly(self, timeout: float):
+        try:
+            WebDriverWait(self.browser, timeout).until_not(
+                EC.presence_of_element_located((By.XPATH, SELECTOR_VISIBLE_MASK))
+            )
+        except TimeoutException:
+            return
+
+    def _click_xpath_when_ready(self, xpath: str, timeout: float, *, mask_timeout: float | None = None):
         last_error: Exception | None = None
+        effective_mask_timeout = self.ORDER_DELETE_MASK_TIMEOUT_SECONDS if mask_timeout is None else mask_timeout
 
         for _attempt in range(3):
             try:
-                self._wait_until_mask_is_gone(timeout=self.ORDER_DELETE_MASK_TIMEOUT_SECONDS)
+                self._wait_until_mask_is_gone_quietly(timeout=effective_mask_timeout)
                 element = self._wait_for_interactable_xpath(xpath, timeout=timeout, poll_frequency=0.1)
                 self.browser.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
-                self._wait_until_mask_is_gone(timeout=self.ORDER_DELETE_MASK_TIMEOUT_SECONDS)
+                self._wait_until_mask_is_gone_quietly(timeout=effective_mask_timeout)
                 try:
                     element.click()
                 except ElementClickInterceptedException:
-                    self._wait_until_mask_is_gone(timeout=self.ORDER_DELETE_MASK_TIMEOUT_SECONDS)
+                    self._wait_until_mask_is_gone_quietly(timeout=effective_mask_timeout)
                     self.browser.execute_script("arguments[0].click();", element)
                 return
             except (ElementClickInterceptedException, StaleElementReferenceException, TimeoutException) as exc:
@@ -952,10 +962,18 @@ class PhoenixPharmaOptimized(PhoenixPharma):
     def _add_product_to_cart_via_ui(self, quantity: int):
         logger.info("PhoenixPharma:add_product_to_cart(): quantity=%s", quantity)
         for _ in range(quantity):
-            self._click_xpath_when_ready(self.PRODUCT_PLUS_BUTTON_XPATH, timeout=5)
+            self._click_xpath_when_ready(
+                self.PRODUCT_PLUS_BUTTON_XPATH,
+                timeout=5,
+                mask_timeout=self.ADD_TO_CART_UI_MASK_TIMEOUT_SECONDS,
+            )
 
         self.store_temporary_screenshot()
-        self._click_xpath_when_ready("//span[text()='Добави']", timeout=5)
+        self._click_xpath_when_ready(
+            "//span[text()='Добави']",
+            timeout=5,
+            mask_timeout=self.ADD_TO_CART_UI_MASK_TIMEOUT_SECONDS,
+        )
         return True
 
     def _apply_ui_order_addition_locally(self, article_row: dict[str, Any], quantity: int):

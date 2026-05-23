@@ -32,6 +32,7 @@ class StubPhoenixPharma:
 
 
 phoenix_module_stub.PhoenixPharma = StubPhoenixPharma
+phoenix_module_stub.SELECTOR_VISIBLE_MASK = "//div[contains(@class, 'x-mask')]"
 phoenix_pkg.phoenix = phoenix_module_stub
 
 
@@ -320,10 +321,26 @@ class PhoenixOptimizedPayloadTests(unittest.TestCase):
         self.assertEqual(
             phoenix._click_xpath_when_ready.call_args_list,
             [
-                mock.call(phoenix.PRODUCT_PLUS_BUTTON_XPATH, timeout=5),
-                mock.call(phoenix.PRODUCT_PLUS_BUTTON_XPATH, timeout=5),
-                mock.call(phoenix.PRODUCT_PLUS_BUTTON_XPATH, timeout=5),
-                mock.call("//span[text()='Добави']", timeout=5),
+                mock.call(
+                    phoenix.PRODUCT_PLUS_BUTTON_XPATH,
+                    timeout=5,
+                    mask_timeout=phoenix.ADD_TO_CART_UI_MASK_TIMEOUT_SECONDS,
+                ),
+                mock.call(
+                    phoenix.PRODUCT_PLUS_BUTTON_XPATH,
+                    timeout=5,
+                    mask_timeout=phoenix.ADD_TO_CART_UI_MASK_TIMEOUT_SECONDS,
+                ),
+                mock.call(
+                    phoenix.PRODUCT_PLUS_BUTTON_XPATH,
+                    timeout=5,
+                    mask_timeout=phoenix.ADD_TO_CART_UI_MASK_TIMEOUT_SECONDS,
+                ),
+                mock.call(
+                    "//span[text()='Добави']",
+                    timeout=5,
+                    mask_timeout=phoenix.ADD_TO_CART_UI_MASK_TIMEOUT_SECONDS,
+                ),
             ],
         )
         phoenix.store_temporary_screenshot.assert_called_once_with()
