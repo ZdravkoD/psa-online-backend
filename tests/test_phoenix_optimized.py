@@ -248,6 +248,54 @@ class PhoenixOptimizedPayloadTests(unittest.TestCase):
         self.assertEqual(phoenix._article_rows_by_name, {})
         self.assertFalse(phoenix._ui_order_page_loaded)
 
+    def test_delete_order_via_ui_retries_after_stale_element(self):
+        phoenix = phoenix_optimized_module.PhoenixPharmaOptimized.__new__(phoenix_optimized_module.PhoenixPharmaOptimized)
+        phoenix.remember_action = lambda *_args, **_kwargs: None
+        phoenix._open_order_list = mock.Mock()
+
+        row = mock.Mock()
+        delete_button = mock.Mock()
+        confirm_button = mock.Mock()
+        browser = mock.Mock()
+        browser.find_element.side_effect = [
+            phoenix_optimized_module.StaleElementReferenceException("stale"),
+            delete_button,
+        ]
+        browser.refresh = mock.Mock()
+        browser.execute_script = mock.Mock()
+        phoenix.browser = browser
+
+        class FakeWait:
+            call_count = 0
+
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def until(self, _condition):
+                FakeWait.call_count += 1
+                if FakeWait.call_count == 1:
+                    return row
+                if FakeWait.call_count == 2:
+                    return row
+                if FakeWait.call_count == 3:
+                    return confirm_button
+                if FakeWait.call_count == 4:
+                    return True
+                raise AssertionError(f"unexpected wait call {FakeWait.call_count}")
+
+        original_wait = phoenix_optimized_module.WebDriverWait
+        phoenix_optimized_module.WebDriverWait = FakeWait
+        try:
+            phoenix_optimized_module.PhoenixPharmaOptimized._delete_order_via_ui(phoenix, "15887229")
+        finally:
+            phoenix_optimized_module.WebDriverWait = original_wait
+
+        self.assertEqual(phoenix._open_order_list.call_count, 2)
+        browser.refresh.assert_called_once_with()
+        self.assertEqual(browser.find_element.call_count, 2)
+        delete_button.click.assert_called_once_with()
+        confirm_button.click.assert_called_once_with()
+
     def test_add_product_to_cart_falls_back_to_order_reload_confirmation_after_refresh(self):
         phoenix = phoenix_optimized_module.PhoenixPharmaOptimized.__new__(phoenix_optimized_module.PhoenixPharmaOptimized)
         phoenix.remember_action = lambda *_args, **_kwargs: None
