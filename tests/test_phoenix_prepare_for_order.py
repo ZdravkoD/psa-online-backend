@@ -48,8 +48,10 @@ support_ui_module = ensure_module("selenium.webdriver.support.ui")
 support_ui_module.WebDriverWait = type("WebDriverWait", (), {})
 support_ec_module = ensure_module("selenium.webdriver.support.expected_conditions")
 support_ec_module.element_to_be_clickable = lambda locator: locator
+support_ec_module.presence_of_element_located = lambda locator: locator
 selenium_exceptions_module = ensure_module("selenium.common.exceptions")
 selenium_exceptions_module.ElementClickInterceptedException = type("ElementClickInterceptedException", (Exception,), {})
+selenium_exceptions_module.StaleElementReferenceException = type("StaleElementReferenceException", (Exception,), {})
 selenium_exceptions_module.TimeoutException = type("TimeoutException", (Exception,), {})
 selenium_exceptions_module.WebDriverException = type("WebDriverException", (Exception,), {})
 

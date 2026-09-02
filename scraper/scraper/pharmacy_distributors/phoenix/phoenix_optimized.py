@@ -72,7 +72,10 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         data: str | bytes | None = None,
         content_type: str | None = None,
     ):
-        headers = {"Cookie": f"PHPSESSID={self._get_php_session_id()}"}
+        headers = {
+            "Cookie": f"PHPSESSID={self._get_php_session_id()}",
+            "X-Requested-With": "XMLHttpRequest",
+        }
         if content_type is not None:
             headers["Content-Type"] = content_type
         url = "https://b2b.phoenixpharma.bg/bg/build/production/BgShop/resources/php/" + path

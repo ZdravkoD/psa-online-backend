@@ -38,6 +38,7 @@ support_ec_module.element_to_be_clickable = lambda locator: locator
 support_ec_module.presence_of_element_located = lambda locator: locator
 exceptions_module = ensure_module("selenium.common.exceptions")
 exceptions_module.ElementClickInterceptedException = type("ElementClickInterceptedException", (Exception,), {})
+exceptions_module.StaleElementReferenceException = type("StaleElementReferenceException", (Exception,), {})
 exceptions_module.TimeoutException = type("TimeoutException", (Exception,), {})
 exceptions_module.WebDriverException = type("WebDriverException", (Exception,), {})
 

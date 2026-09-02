@@ -32,6 +32,9 @@ by_module.By = type("By", (), {})
 ensure_module("selenium.webdriver.chrome")
 chrome_webdriver_module = ensure_module("selenium.webdriver.chrome.webdriver")
 chrome_webdriver_module.WebDriver = type("WebDriver", (), {})
+selenium_exceptions_module = ensure_module("selenium.common.exceptions")
+selenium_exceptions_module.TimeoutException = type("TimeoutException", (Exception,), {})
+selenium_exceptions_module.WebDriverException = type("WebDriverException", (Exception,), {})
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scraper" / "scraper" / "pharmacy_distributors" / "common" / "browser_common.py"
