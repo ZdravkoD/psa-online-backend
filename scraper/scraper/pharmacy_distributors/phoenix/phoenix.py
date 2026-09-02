@@ -2,17 +2,19 @@ import logging
 import math
 from typing import Tuple
 
+from pharmacy_distributors.common.models import ScrapedProductInfo
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import ElementClickInterceptedException
+from selenium.common.exceptions import ElementClickInterceptedException, StaleElementReferenceException, TimeoutException, WebDriverException
 
 from pharmacy_distributors.common.browser_common import BrowserCommon
 from configuration.common import DistributorConfig
 
 
 SELECTOR_SPELLCHECK = "//div[contains(@data-componentid, 'order-spellcheckwindow')]//div[contains(@class, 'x-tool-tool-el')]"
+SELECTOR_VISIBLE_MASK = "//div[contains(@class, 'x-mask') and not(contains(@style, 'display: none'))]"
 # Create a logger for this module
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -48,36 +50,122 @@ class PhoenixPharma(BrowserCommon):
                                 + "starts-with(@name, 'textfield')]"
         self.SEARCH_BUTTON_CSS_SELECTOR = "span.fa-search"
         self.PRODUCT_PLUS_BUTTON_XPATH = "//span[text()='Добави']/ancestor::*/div[contains(@role,'grid')]//span[text()='+']"
+        self.ROW_WITH_EXPIRY_DATE_XPATH = "//div[contains(@class, 'x-grid-cell-inner') and text() = 'Срок на годност']"
 
         self.lastSearchWasEmpty = True
 
+    def _is_retryable_navigation_error(self, exc: Exception) -> bool:
+        lowered = str(exc).lower()
+        return "aborted by navigation" in lowered or "not attached to an active page" in lowered
+
+    def _wait_until_mask_is_gone(self, timeout: float = 10):
+        try:
+            WebDriverWait(self.browser, timeout).until_not(
+                EC.presence_of_element_located((By.XPATH, SELECTOR_VISIBLE_MASK))
+            )
+        except TimeoutException:
+            logger.info("PhoenixPharma: loading mask did not disappear within %s seconds", timeout)
+
+    def _wait_for_interactable_xpath(self, xpath: str, timeout: float, poll_frequency: float = 0.1):
+        def find_interactable(_browser):
+            try:
+                elements = _browser.find_elements(By.XPATH, xpath)
+            except StaleElementReferenceException:
+                return False
+
+            for element in elements:
+                try:
+                    if element.is_displayed() and element.is_enabled():
+                        return element
+                except StaleElementReferenceException:
+                    continue
+            return False
+
+        return WebDriverWait(self.browser, timeout, poll_frequency=poll_frequency).until(find_interactable)
+
+    def _search_for_product_once(self, product_name: str):
+        self._clearSearchResult()
+        logger.info("PhoenixPharma:_search_for_product(): product_name:" + product_name)
+        self.remember_action(f"Searching Phoenix UI for product '{product_name}'")
+        search_box = WebDriverWait(self.browser, 10).until(EC.element_to_be_clickable((By.XPATH, self.SEARCH_BOX_XPATH)))
+        search_box.clear()
+        search_box.send_keys(product_name)
+        self.store_temporary_screenshot()
+        search_button = WebDriverWait(self.browser, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, self.SEARCH_BUTTON_CSS_SELECTOR)))
+        search_button.click()
+
+        # if spellcheck popup appears, hide it
+        try:
+            element = self._wait_for_interactable_xpath(
+                SELECTOR_SPELLCHECK + "|" + self.PRODUCT_PLUS_BUTTON_XPATH,
+                timeout=2,
+            )
+            if element.tag_name == 'div':
+                logger.info("PhoenixPharma: Closing spellcheck")
+                # spellcheck is triggered only if there are no results, so return None
+                element.click()
+                return None
+        except Exception:
+            # Neither spellcheck nor result was found, so return None
+            return None
+
+        number_of_results = len(self.browser.find_elements(By.XPATH, self.PRODUCT_PLUS_BUTTON_XPATH))
+        self.lastSearchWasEmpty = number_of_results == 0
+        return element
+
     def login(self):
-        self.browser.get(self.DUMMY_PAGE)
-        self.browser.add_cookie({'name': 'cookiesAsked', 'value': 'true'})
-        self.browser.add_cookie({'name': 'cookiesAllowedMarketing', 'value': 'false'})
-        self.browser.add_cookie({'name': 'cookiesAllowedAnalytical', 'value': 'false'})
-        self.browser.get(self.LOGIN_PAGE)
+        last_error = None
+        for attempt in range(1, 4):
+            try:
+                self.remember_action("Opening Phoenix login page")
+                self.open_url(self.DUMMY_PAGE, retries=1)
+                self.browser.add_cookie({'name': 'cookiesAsked', 'value': 'true'})
+                self.browser.add_cookie({'name': 'cookiesAllowedMarketing', 'value': 'false'})
+                self.browser.add_cookie({'name': 'cookiesAllowedAnalytical', 'value': 'false'})
+                self.open_url(self.LOGIN_PAGE, retries=1)
+                break
+            except Exception as exc:
+                last_error = exc
+                logger.warning("PhoenixPharma: Login page bootstrap attempt %s/3 failed: %s", attempt, exc)
+                if attempt == 3:
+                    raise
+                self.restart_browser()
+        else:
+            raise last_error
 
         self.store_temporary_screenshot()
+        self.remember_action(f"Entering Phoenix username for pharmacy {self.username}")
         self.browser.find_element(By.CSS_SELECTOR, "input[name='loginUsername']").send_keys(self.username)
         self.browser.find_element(By.CSS_SELECTOR, "input[name='loginPasswordText']").click()
         self.browser.find_element(By.CSS_SELECTOR, "input[name='loginPasswordText']").send_keys(self.password)
         self.store_temporary_screenshot()
+        self.remember_action("Submitting Phoenix login form")
         self.browser.find_element(By.CSS_SELECTOR, "input[name='loginPasswordText']").send_keys(Keys.RETURN)
 
     def prepare_for_order(self):
+        self.remember_action("Opening Phoenix order menu")
+        self._wait_until_mask_is_gone()
         WebDriverWait(self.browser, 2).until(EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Поръчка')]"))).click()
         self.store_temporary_screenshot()
+        self.remember_action("Starting Phoenix free order")
+        self._wait_until_mask_is_gone()
         self.browser.find_element(By.XPATH, "//span[contains(text(), 'Нова поръчка свободна')]").click()
+        self._wait_until_mask_is_gone()
 
-        self.browser.find_element(By.CSS_SELECTOR, "input[name='order_partner_id']").send_keys(self.pharmacyID)
+        self.remember_action(f"Selecting Phoenix client with pharmacy ID {self.pharmacyID}")
+        partner_input = WebDriverWait(self.browser, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, "input[name='order_partner_id']")))
+        partner_input.clear()
+        partner_input.send_keys(self.pharmacyID)
         try:
             element = WebDriverWait(self.browser, 5)\
                 .until(EC.element_to_be_clickable((By.XPATH, "//div[contains(@class, 'x-grid-cell-inner') and text() = '" + self.pharmacyID + "']")))
             element.click()
-        except Exception:
-            logger.debug("PhoenixPharma:prepare_for_order(): Couldn't find the pharmacy with ID " + self.pharmacyID)
-            pass
+            self._wait_until_mask_is_gone()
+        except Exception as exc:
+            logger.error("PhoenixPharma:prepare_for_order(): Couldn't find the pharmacy with ID %s", self.pharmacyID)
+            raise ValueError(
+                f"Phoenix client with pharmacy ID '{self.pharmacyID}' was not found or could not be selected."
+            ) from exc
 
     def _hide_spellcheck(self):
         self.store_temporary_screenshot()
@@ -91,39 +179,14 @@ class PhoenixPharma(BrowserCommon):
         self.store_temporary_screenshot()
 
     def _search_for_product(self, product_name: str):
-        self._clearSearchResult()
-        logger.info("PhoenixPharma:_search_for_product(): product_name:" + product_name)
-        self.browser.find_element(By.XPATH, self.SEARCH_BOX_XPATH).clear()
-        self.browser.find_element(By.XPATH, self.SEARCH_BOX_XPATH).send_keys(product_name)
-        self.store_temporary_screenshot()
-        self.browser.find_element(By.CSS_SELECTOR, self.SEARCH_BUTTON_CSS_SELECTOR).click()
-
-        # if spellcheck popup appears, hide it
         try:
-            element = WebDriverWait(self.browser, 5)\
-                .until(EC.element_to_be_clickable((By.XPATH, SELECTOR_SPELLCHECK + "|" + self.PRODUCT_PLUS_BUTTON_XPATH)))
-            if element.tag_name == 'div':
-                logger.info("PhoenixPharma: Closing spellcheck")
-                # spellcheck is triggered only if there are no results, so return None
-                element.click()
-                return None
-        except Exception:
-            # Neither spellcheck nor result was found, so return None
-            return None
-
-        number_of_results = len(self.browser.find_elements(By.XPATH, self.PRODUCT_PLUS_BUTTON_XPATH))
-        logger.info("PhoenixPharma: number_of_results=" + str(number_of_results))
-        if number_of_results == 0:
-            logger.error("PhoenixPharma: Search result is empty...")
-            return None
-        if number_of_results > 1:
-            self.lastSearchWasEmpty = False
-            logger.error("PhoenixPharma: Too many results were found with the search. For now, we parse this as an invalid search result")
-            return None
-
-        logger.info("PhoenixPharma:_search_for_product(): Found product " + product_name)
-        self.lastSearchWasEmpty = False
-        return element
+            return self._search_for_product_once(product_name)
+        except (ElementClickInterceptedException, WebDriverException) as exc:
+            if not self._is_retryable_navigation_error(exc) and not isinstance(exc, ElementClickInterceptedException):
+                raise
+            logger.warning("PhoenixPharma: Retrying product search after transient UI/navigation error: %s", exc)
+            self._hide_spellcheck()
+            return self._search_for_product_once(product_name)
 
     def _get_price_header_position(self):
         SELECTOR_PRICE_HEADER_POSITION = "//span[text()='Добави']/ancestor::*[9]//div[starts-with(@id, 'gridcolumn')"\
@@ -155,7 +218,7 @@ class PhoenixPharma(BrowserCommon):
         product_name = product_name[:product_name.find("\n")+1]
         return product_name
 
-    def get_product_name_and_price(self, productSearchNames: list) -> Tuple[str, float]:
+    def get_product_name_and_price(self, productSearchNames: list) -> ScrapedProductInfo:
         logger.info("PhoenixPharma:get_product_name_and_price(): productSearchNames=" + str(productSearchNames))
         element = None
         for productName in productSearchNames:
@@ -173,11 +236,26 @@ class PhoenixPharma(BrowserCommon):
             price_header_position = self._get_price_header_position()
             if price_header_position == -1:
                 logger.error("PhoenixPharma: Price header position was not found...")
-                return "", math.inf
+                return ScrapedProductInfo(
+                    name="",
+                    price=math.inf,
+                    is_on_promotion=False,
+                    alternative_names=None
+                )
 
-            return self._get_product_name(), self._get_product_price(price_header_position)
+            return ScrapedProductInfo(
+                name=self._get_product_name(),
+                price=self._get_product_price(price_header_position),
+                is_on_promotion=False,
+                alternative_names=None
+            )
 
-        return "", math.inf
+        return ScrapedProductInfo(
+            name="",
+            price=math.inf,
+            is_on_promotion=False,
+            alternative_names=None
+        )
 
     def add_product_to_cart(self, quantity):
         logger.info("PhoenixPharma:add_product_to_cart(): quantity=" + str(quantity))
@@ -201,14 +279,9 @@ class PhoenixPharma(BrowserCommon):
 
         logger.info("PhoenixPharma:_clearSearchResult() - clearing last result")
         self.store_temporary_screenshot()
-
-        self.browser.find_element(By.XPATH, self.SEARCH_BOX_XPATH).clear()
-        self.browser.find_element(By.XPATH, self.SEARCH_BOX_XPATH).send_keys("IMPOSSIBLE_PRODUCT")
-        try:
-            self.browser.find_element(By.CSS_SELECTOR, self.SEARCH_BUTTON_CSS_SELECTOR).click()
-        except Exception:
-            self._hide_spellcheck()
-            self.browser.find_element(By.CSS_SELECTOR, self.SEARCH_BUTTON_CSS_SELECTOR).click()
+        self._hide_spellcheck()
+        search_box = WebDriverWait(self.browser, 10).until(EC.element_to_be_clickable((By.XPATH, self.SEARCH_BOX_XPATH)))
+        search_box.clear()
 
     def refresh_page(self):
         self.browser.refresh()

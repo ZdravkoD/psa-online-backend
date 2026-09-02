@@ -7,7 +7,8 @@ from typing import List
 class RowInfo:
     def __init__(self, original_product_name: str | None, product_name_variations: List[str] | None, product_quantity: int | None):
         self.original_product_name = original_product_name
-        self.product_name_variations = product_name_variations
+        self.product_name_variations = product_name_variations if product_name_variations is not None else []
+        self.custom_product_name_variations: List[str] = []
         self.product_quantity = product_quantity
 
     def __str__(self) -> str:
@@ -62,14 +63,19 @@ class FileWorker:
     def get_progress(self) -> WorkerProgress:
         raise NotImplementedError("Subclasses must implement this method")
 
-    def _generateProductNameVariations(self, productName):
+    def get_distinct_original_product_names(self) -> List[str]:
+        raise NotImplementedError("Subclasses must implement this method")
+
+    def _generateProductNameVariations(self, productName: str):
         result = []
-        productName_xWithSpaces = productName\
+        # точката (гр.|мг. и т.н.) се заменя с интервал
+        # Десетичната запетая се заменя с точка
+        productName_xWithSpaces = productName.lower()\
             .strip()\
             .replace(".", " ")\
             .replace("/", " ")\
             .replace("!", "")\
-            .replace("тбл", "")
+            .replace(",", ".")
 
         # define desired replacements
         rep = {"x ": "x",  # English x
@@ -79,11 +85,31 @@ class FileWorker:
         pattern = re.compile("|".join(rep.keys()))
         productName_xWithoutSpaces = pattern.sub(lambda m: rep[re.escape(m.group(0))], productName_xWithSpaces)
 
-        productName_withoutX = productName_xWithoutSpaces.replace("x", "").replace("х", "")
+        # remove x from the product name but only if it is not part of a word like "хапче"
+        productName_withoutX = re.sub(r"[xх](?=\s|$)", "", productName_xWithSpaces)
 
-        result.append(productName_xWithoutSpaces)  # 1
-        result.append(productName_xWithSpaces)  # 2
-        result.append(productName_withoutX)  # 3
+        productName_withoutTabletki = productName_withoutX.replace("табл", "")\
+            .replace("таб", "")\
+            .replace("тбл", "")\
+            .replace("тб ", "")
+
+        productName_withoutUf = productName_withoutTabletki.replace("уф", "")
+        productName_withShortGrams = re.sub(r"гр(?=\s|$)", "г", productName_withoutUf)
+        productName_withShortMilligrams = re.sub(r"мг(?=.*мг)", "", productName_withShortGrams)
+        productName_replacedSasheta = productName_withShortMilligrams.replace("сашета", "сашети")
+        productName_replacedSasheta2 = productName_withShortMilligrams.replace("сашета", "саш")
+        productName_replacedSasheta3 = productName_withShortMilligrams.replace("сашета", "саше")
+
+        result.append(productName_withoutTabletki)  # 1
+        result.append(productName_xWithoutSpaces)  # 2
+        result.append(productName_xWithSpaces)  # 3
+        result.append(productName_withoutX)  # 4
+        result.append(productName_withoutUf)  # 5
+        result.append(productName_withShortGrams)  # 6
+        result.append(productName_withShortMilligrams)  # 7
+        result.append(productName_replacedSasheta)  # 8
+        result.append(productName_replacedSasheta2)
+        result.append(productName_replacedSasheta3)
 
         # make result to contain only unique strings
         result = self._uniqueList(result)

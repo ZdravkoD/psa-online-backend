@@ -41,38 +41,9 @@ class ScraperTaskItemStatus:
         }
 
 
-class ScraperTaskUpdates:
-    def __init__(self, account_id: ObjectId, task_id: str, status: ScraperTaskItemStatus, report: dict | None, image_urls: list[str] | None = None):
-        self.account_id = account_id
-        self.task_id = task_id
-        self.status = status
-        self.report = report
-        self.image_urls = image_urls
-
-    def _validate(self):
-        if not isinstance(self.account_id, ObjectId):
-            raise ValueError("Account ID must be an ObjectId")
-        if len(str(self.account_id)) == 0:
-            raise ValueError("Account ID must not be empty")
-        if not isinstance(self.task_id, str):
-            raise ValueError("Task ID must be a string")
-        if len(self.task_id) == 0:
-            raise ValueError("Task ID must not be empty")
-
-    def to_json(self):
-        return {
-            "account_id": str(self.account_id),
-            "task_id": str(self.task_id),
-            "status": self.status.to_json(),
-            "report": self.report,
-            "image_urls": self.image_urls
-        }
-
-
 class ScraperTaskItem:
-    status: ScraperTaskItemStatus
-
     def __init__(self,
+                 id: ObjectId,
                  account_id: ObjectId,
                  file_name: str,
                  file_data: str,
@@ -82,6 +53,7 @@ class ScraperTaskItem:
                  task_type: ScraperTaskActionType,
                  date_created: str,
                  date_updated: str,
+                 status: ScraperTaskItemStatus,
                  report: dict | None,
                  image_urls: list[str] | None = None):
         """
@@ -108,16 +80,17 @@ class ScraperTaskItem:
             "date_updated": "2024-09-09T03:30:31Z",
         }
         """
-        self.id: str = ""
-        self.account_id = account_id
+        self.id = ObjectId(id)
+        self.account_id = ObjectId(account_id)
         self.file_name = file_name
         self.file_data = file_data
-        self.file_type = file_type
+        self.file_type = FileType(file_type)
         self.pharmacy_id = pharmacy_id
         self.distributors = distributors
-        self.task_type = task_type
+        self.task_type = ScraperTaskActionType(task_type)
         self.date_created = date_created
         self.date_updated = date_updated
+        self.status = status
         self.report = report
         self.image_urls = image_urls
 
@@ -156,6 +129,7 @@ class ScraperTaskItem:
     # JSON representation of the object
     def to_json(self):
         result = {
+            "id": str(self.id),
             "account_id": str(self.account_id),
             "file_name": self.file_name,
             "file_data": self.file_data,
@@ -169,11 +143,9 @@ class ScraperTaskItem:
             "report": self.report,
             "image_urls": self.image_urls
         }
-        if self.id:
-            result["_id"] = str(self.id)
         return result
 
-    def to_update_dict(self):
+    def to_insert_dict(self):
         result = {
             "account_id": ObjectId(self.account_id),
             "file_name": self.file_name,
@@ -184,7 +156,7 @@ class ScraperTaskItem:
             "task_type": self.task_type.value,
             "date_created": self.date_created,
             "date_updated": self.date_updated,
-            "status": self.status,
+            "status": self.status.to_json(),
             "report": self.report,
             "image_urls": self.image_urls
         }
@@ -193,6 +165,7 @@ class ScraperTaskItem:
     @classmethod
     def from_dict(cls, data: dict):
         cls_instance = cls(
+            id=data.get("_id") or data.get("id") or ObjectId(),
             account_id=ObjectId(data["account_id"]),
             file_name=data["file_name"],
             file_data=data["file_data"],
@@ -202,14 +175,13 @@ class ScraperTaskItem:
             task_type=ScraperTaskActionType(data["task_type"]),
             date_created=data["date_created"],
             date_updated=data["date_updated"],
+            status=ScraperTaskItemStatus(
+                status=TaskStatus(data["status"]["status"]),
+                message=data["status"]["message"],
+                progress=data["status"]["progress"],
+                detailed_error_message=data["status"].get("detailed_error_message"),
+            ),
             report=data["report"],
             image_urls=data.get("image_urls")
-        )
-        cls_instance.id = data.get("_id") or data.get("id") or ""
-        cls_instance.status = ScraperTaskItemStatus(
-            status=TaskStatus(data["status"]["status"]),
-            message=data["status"]["message"],
-            progress=data["status"]["progress"],
-            detailed_error_message=data["status"].get("detailed_error_message"),
         )
         return cls_instance

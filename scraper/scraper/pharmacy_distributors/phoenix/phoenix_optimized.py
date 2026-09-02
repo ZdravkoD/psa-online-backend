@@ -1,12 +1,27 @@
+import html
+import json
 import logging
 import math
+import re
+import time
+from datetime import datetime
+from typing import Any, Optional, Tuple
 from urllib.parse import quote
+from xml.sax.saxutils import escape
+
 import requests
 import xmltodict
-from selenium.webdriver.common.action_chains import ActionChains
+from pharmacy_distributors.common.models import ScrapedProductInfo
+from selenium.common.exceptions import (
+    ElementClickInterceptedException,
+    StaleElementReferenceException,
+    TimeoutException,
+)
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
 
-from pharmacy_distributors.phoenix.phoenix import PhoenixPharma
+from pharmacy_distributors.phoenix.phoenix import PhoenixPharma, SELECTOR_VISIBLE_MASK
 
 # Create a logger for this module
 logger = logging.getLogger(__name__)
@@ -15,98 +30,1003 @@ logger = logging.getLogger(__name__)
 
 
 class PhoenixPharmaOptimized(PhoenixPharma):
+    REQUEST_TIMEOUT_SECONDS = 30
+    PARTNER_LOOKUP_ATTEMPTS = 8
+    PARTNER_LOOKUP_DELAY_SECONDS = 0.2
+    ORDER_CONFIRMATION_RELOAD_ATTEMPTS = 10
+    ORDER_CONFIRMATION_RELOAD_DELAY_SECONDS = 0.2
+    UI_ORDER_CONFIRMATION_TIMEOUT_SECONDS = 1.0
+    UI_ORDER_CONFIRMATION_POLL_SECONDS = 0.1
+    ADD_TO_CART_UI_MASK_TIMEOUT_SECONDS = 0.5
+    ORDER_DELETE_CONFIRMATION_TIMEOUT_SECONDS = 2.0
+    ORDER_DELETE_MASK_TIMEOUT_SECONDS = 10.0
+    ORDER_DELETE_ATTEMPTS = 3
+    ORDER_DELETE_RETRY_DELAY_SECONDS = 0.5
 
     def __init__(self, pharmacyID: str, shouldInitBrowser=True):
         super().__init__(pharmacyID, shouldInitBrowser)
 
         self.pharmacyID = pharmacyID
+        self._partner_row: dict[str, Any] | None = None
+        self._current_order_row: dict[str, Any] | None = None
+        self._order_item_rows: list[dict[str, Any]] = []
+        self._article_rows_by_name: dict[str, dict[str, Any]] = {}
+        self._ui_order_page_loaded = False
+
+    def prepare_for_order(self):
+        self.remember_action("Preparing Phoenix order via API")
+        self._ensure_order_initialized()
+
+    def _get_php_session_id(self) -> str:
+        php_session_id_cookie = self.browser.get_cookie("PHPSESSID")
+        if php_session_id_cookie is None or not php_session_id_cookie.get("value"):
+            raise RuntimeError("PhoenixPharma: PHPSESSID cookie is missing")
+        return str(php_session_id_cookie["value"])
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: str = "",
+        data: str | bytes | None = None,
+        content_type: str | None = None,
+    ):
+        headers = {
+            "Cookie": f"PHPSESSID={self._get_php_session_id()}",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        if content_type is not None:
+            headers["Content-Type"] = content_type
+        url = "https://b2b.phoenixpharma.bg/bg/build/production/BgShop/resources/php/" + path
+        if query:
+            url += "?" + query
+
+        response = requests.request(
+            method=method,
+            url=url,
+            headers=headers,
+            data=data,
+            timeout=self.REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        return response
+
+    def _parse_xml_dataset(self, xml_text: str) -> dict[str, Any]:
+        parsed = xmltodict.parse(xml_text)
+        dataset = parsed.get("dataset")
+        if not isinstance(dataset, dict):
+            raise ValueError("PhoenixPharma: XML dataset response was not in the expected format")
+        return dataset
+
+    def _ensure_partner_loaded(self) -> dict[str, Any]:
+        if self._partner_row is not None:
+            return self._partner_row
+
+        last_error: Exception | None = None
+        for attempt in range(1, self.PARTNER_LOOKUP_ATTEMPTS + 1):
+            self.remember_action(f"Loading Phoenix partner data for pharmacy {self.pharmacyID}")
+            try:
+                response = self._request(
+                    "GET",
+                    "combo/partner.php",
+                    query=f"_dc=1&query={quote(self.pharmacyID)}&DaysDisableCashOnDelivery=11&page=1&start=0&limit=10",
+                )
+                dataset = self._parse_xml_dataset(response.text)
+                partner_row = dataset.get("row")
+                if isinstance(partner_row, dict):
+                    self._partner_row = partner_row
+                    return partner_row
+                last_error = ValueError(f"Phoenix partner with pharmacy ID '{self.pharmacyID}' was not found.")
+            except Exception as exc:
+                last_error = exc
+
+            logger.warning(
+                "PhoenixPharma: Partner lookup attempt %s/%s failed for pharmacy %s: %s",
+                attempt,
+                self.PARTNER_LOOKUP_ATTEMPTS,
+                self.pharmacyID,
+                last_error,
+            )
+            if attempt != self.PARTNER_LOOKUP_ATTEMPTS:
+                time.sleep(self.PARTNER_LOOKUP_DELAY_SECONDS)
+
+        raise last_error if last_error is not None else ValueError(
+            f"Phoenix partner with pharmacy ID '{self.pharmacyID}' was not found."
+        )
+
+    def _ensure_order_initialized(self) -> dict[str, Any]:
+        if self._current_order_row is not None:
+            return self._current_order_row
+
+        partner_row = self._ensure_partner_loaded()
+        self.remember_action("Creating Phoenix order via API")
+
+        assign_response = self._request("GET", "dataset/order/assignId.php", query="_dc=1")
+        order_id = assign_response.json()["order_id"]
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        order_payload = (
+            "<dataset><row>"
+            f"<order_id>{order_id}</order_id>"
+            "<order_type>F</order_type>"
+            "<order_state_id>100</order_state_id>"
+            "<order_state_description>CREATED</order_state_description>"
+            f"<order_created>{now}</order_created>"
+            "<order_created_by>0</order_created_by>"
+            "<order_created_by_realname></order_created_by_realname>"
+            "<order_is_to>false</order_is_to>"
+            "<order_confirm_user>0</order_confirm_user>"
+            "<order_crmode>create</order_crmode>"
+            "<order_ordered></order_ordered>"
+            "<order_item_count>0</order_item_count>"
+            "<TotalQuantity>0</TotalQuantity>"
+            "<TotalBasePrice>0</TotalBasePrice>"
+            "<TotalSalePrice>0</TotalSalePrice>"
+            "<orderTourId></orderTourId>"
+            "<orderTourDate></orderTourDate>"
+            "<IsCashOrder>0</IsCashOrder>"
+            "<order_ksc>0</order_ksc>"
+            "<order_remark></order_remark>"
+            f"<order_params>{{&quot;updateSumsLog&quot;:{{&quot;v&quot;:&quot;2&quot;,&quot;discountType&quot;:{partner_row['DiscountTypeIDFree']},&quot;algo&quot;:[]}}}}</order_params>"
+            "<order_reference></order_reference>"
+            f"<order_branch_number>{partner_row['BranchNo']}</order_branch_number>"
+            f"<order_partner_number>{partner_row['IDF']}</order_partner_number>"
+            f"<order_partner_name>{escape(self._xml_safe(partner_row.get('Name')))}</order_partner_name>"
+            f"<order_partner_street>{escape(self._xml_safe(partner_row.get('Address')))}</order_partner_street>"
+            f"<DiscountTypeIDFree>{partner_row['DiscountTypeIDFree']}</DiscountTypeIDFree>"
+            f"<DiscountTypeIDNZOK>{partner_row['DiscountTypeIDNZOK']}</DiscountTypeIDNZOK>"
+            "<order_created_by_email></order_created_by_email>"
+            "<order_ordered_by_realname></order_ordered_by_realname>"
+            "<order_ordered_by_email></order_ordered_by_email>"
+            "<pharmosOrderNo>0</pharmosOrderNo>"
+            "<xml_item_list>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot; standalone=&quot;yes&quot;?&gt;&lt;dataset&gt;&lt;/dataset&gt;</xml_item_list>"
+            "<xml_package_list>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot; standalone=&quot;yes&quot;?&gt;&lt;dataset&gt;&lt;/dataset&gt;</xml_package_list>"
+            "<AccNatRebateStart></AccNatRebateStart>"
+            "<AccNatRebateEnd></AccNatRebateEnd>"
+            "<AccNatRebateGroup>false</AccNatRebateGroup>"
+            "<_htmlInvoice></_htmlInvoice>"
+            "<sendResultSuccess>0</sendResultSuccess>"
+            "<sendResultErrmsg></sendResultErrmsg>"
+            "<deleted>0</deleted>"
+            "<id>BgShop.model.order.OrderHeader-1</id>"
+            f"<order_partner_id>{partner_row['partner_id']}</order_partner_id>"
+            "</row></dataset>"
+        )
+
+        response = self._request(
+            "POST",
+            "dataset/order/commit.php",
+            query="_dc=1",
+            data=order_payload.encode("utf-8"),
+            content_type="application/x-www-form-urlencoded; charset=UTF-8",
+        )
+        dataset = self._parse_xml_dataset(response.text)
+        row = dataset.get("row")
+        if not isinstance(row, dict):
+            raise ValueError("PhoenixPharma: Order creation did not return the expected order row")
+
+        self._current_order_row = row
+        self._order_item_rows = self._decode_order_item_rows(row.get("xml_item_list"))
+        self._ui_order_page_loaded = False
+        return row
 
     def _get_json_result_of_search(self, product_name: str):
-        php_session_id_cookie = self.browser.get_cookie("PHPSESSID")
-        if php_session_id_cookie is None:
-            logger.error("PhoenixPharma: PHPSESSID cookie is missing...")
-            return None
-        http_response = requests.get("https://b2b.phoenixpharma.bg/bg/build/production/BgShop/resources/php/combo/article.php?selby=article&" +
-                                     "query=" + quote(product_name) +
-                                     "&order_type=F" +
-                                     "&order_partner_id=4695" +
-                                     "&mode=name_inside",
-                                     headers={"Cookie": "PHPSESSID=" + str(php_session_id_cookie["value"])})
-        json_root = xmltodict.parse(http_response.text)
-        return json_root
+        partner_row = self._ensure_partner_loaded()
+        response = self._request(
+            "GET",
+            "combo/article.php",
+            query="selby=article"
+            + "&query=" + quote(product_name)
+            + "&order_type=F"
+            + "&order_partner_id=" + quote(str(partner_row["partner_id"]))
+            + "&mode=name_inside"
+            + "&page=1&start=0",
+        )
+        return self._parse_xml_dataset(response.text)
 
-    # returns name and price
-    # order_type + order_partner_id => These parameters are allowing us to get the discount price. All of them are hardcoded
-    def _search_for_product_optimized(self, product_name: str):
-        logger.info("PhoenixPharma._search_for_product_optimized(): Searching for product: '" + product_name + "'...")
-        json_root = self._get_json_result_of_search(product_name)
-        if json_root is None:
+    def _search_for_product_optimized(self, product_name: str) -> Tuple[Optional[dict[str, Any]], Optional[list[str]]]:
+        self.remember_action(f"Searching Phoenix for product '{product_name}' via optimized endpoint")
+        logger.info("PhoenixPharma._search_for_product_optimized(): Searching for product: '%s'...", product_name)
+        dataset = self._get_json_result_of_search(product_name)
+        if dataset is None:
             logger.error("PhoenixPharma._search_for_product_optimized(): Search result is empty...")
             return None, None
-        number_of_results = int(json_root["dataset"]["results"])
 
-        logger.info("PhoenixPharmaOptimized: number_of_results=" + str(number_of_results))
+        number_of_results = int(dataset["results"])
+        logger.info("PhoenixPharmaOptimized: number_of_results=%s", number_of_results)
         if number_of_results == 0:
             logger.error("PhoenixPharma._search_for_product_optimized(): Search result is empty...")
             return None, None
+
+        rows = dataset.get("row", [])
+        if isinstance(rows, dict):
+            rows = [rows]
+
+        filtered_rows = [row for row in rows if row.get("ExpiryDate") and row.get("isWebSaleProhibition") == "0"]
         if number_of_results > 1:
             self.lastSearchWasEmpty = False
-            logger.error("PhoenixPharma: Too many results were found with the search. For now, we parse this as an invalid search result")
-            return None, None
-        result_product_expiry_date = json_root["dataset"]["row"]["ExpiryDate"]
-        if result_product_expiry_date is None or result_product_expiry_date.strip() == "":
+            if len(filtered_rows) == 0:
+                logger.error("PhoenixPharma: Found multiple products with search, but none of them have an expiry date, so we're skipping these products...")
+                return None, None
+            if len(filtered_rows) > 1:
+                logger.error("PhoenixPharma: Found multiple products with search, but more than one of them have an expiry date, so we're skipping these products and we add the product names to the alternative names...")
+                return None, [row["CyrName"] for row in filtered_rows]
+            logger.info("PhoenixPharma: Found multiple products with search, but only one of them has an expiry date, so we're returning this product...")
+            selected_row = filtered_rows[0]
+        else:
+            selected_row = rows[0]
+
+        if not selected_row.get("ExpiryDate"):
             self.lastSearchWasEmpty = False
             logger.error("PhoenixPharma: Found product with search, but the expiry date was empty, so we're skipping this product...")
             return None, None
 
-        result_product_name = json_root["dataset"]["row"]["CyrName"]
-        result_product_price = float(json_root["dataset"]["row"]["pdPrice"])
+        if selected_row.get("isWebSaleProhibition") != "0":
+            logger.error(
+                "PhoenixPharma: Found product with search, but the product is not available for web sale, so we're skipping this product...: isWebSaleProhibition=%s",
+                selected_row.get("isWebSaleProhibition"),
+            )
+            return None, None
 
-        logger.info("PhoenixPharma:_search_for_product_optimized(): Found product "
-                    + result_product_name
-                    + ", with price: " + str(result_product_price)
-                    + ", and ExpiryDate: " + result_product_expiry_date)
+        logger.info(
+            "PhoenixPharma:_search_for_product_optimized(): Found product %s, with price: %s, and ExpiryDate: %s",
+            selected_row.get("CyrName"),
+            selected_row.get("pdPrice"),
+            selected_row.get("ExpiryDate"),
+        )
         self.lastSearchWasEmpty = False
-        return result_product_name, result_product_price
+        return selected_row, None
 
-    def get_product_name_and_price(self, productSearchNames: list):
-        logger.info("PhoenixPharmaOptimized:get_product_name_and_price(): productSearchNames=" + str(productSearchNames))
+    def get_product_name_and_price(self, productSearchNames: list) -> ScrapedProductInfo:
+        logger.info("PhoenixPharmaOptimized:get_product_name_and_price(): productSearchNames=%s", productSearchNames)
+        all_alternative_names: set[str] = set()
         for productName in productSearchNames:
-            result_product_name, result_product_price = self._search_for_product_optimized(productName)
+            article_row, alternative_names = self._search_for_product_optimized(productName)
+            if alternative_names is not None:
+                all_alternative_names.update(alternative_names)
 
-            if result_product_name is None:
+            if article_row is None:
                 continue
 
-            return result_product_name, result_product_price
+            result_product_name = article_row["CyrName"]
+            self._article_rows_by_name[result_product_name] = article_row
+            return ScrapedProductInfo(
+                name=result_product_name,
+                price=float(article_row["pdPrice"]) if article_row.get("pdPrice") is not None else math.inf,
+                is_on_promotion=False,
+                alternative_names=list(all_alternative_names),
+            )
 
-        return "", math.inf
+        return ScrapedProductInfo(
+            name="",
+            price=math.inf,
+            is_on_promotion=False,
+            alternative_names=list(all_alternative_names),
+        )
 
-    def _add_product_to_cart_optimized(self, quantity):
-        plus_button = self.browser.find_element(By.XPATH, self.PRODUCT_PLUS_BUTTON_XPATH)
-        actions = ActionChains(self.browser)
-        actions.move_to_element(plus_button).perform()
-        for i in range(0, quantity):
-            plus_button.click()
+    def _xml_safe(self, value: Any) -> str:
+        return "" if value is None else str(value)
 
-        self.browser.find_element(By.XPATH, "//span[text()='Добави']").click()
+    def _build_order_item_row(self, article_row: dict[str, Any], quantity: int, item_index: int) -> dict[str, Any]:
+        return {
+            "order_item_id": "",
+            "item_id": str(item_index),
+            "article_id": self._xml_safe(article_row.get("article_id")),
+            "article_number": self._xml_safe(article_row.get("article_number")),
+            "CyrName": self._xml_safe(article_row.get("CyrName")),
+            "LatName": self._xml_safe(article_row.get("LatName")),
+            "ProducerName": self._xml_safe(article_row.get("ProducerName")),
+            "BasePrice": self._xml_safe(article_row.get("BasePrice", "0")),
+            "SalePrice": self._xml_safe(article_row.get("SalePrice", "0")),
+            "CustomDiscPct": "0",
+            "CustomDiscType": "A",
+            "pdDisc": self._xml_safe(article_row.get("pdDisc", "0")),
+            "pdPrice": self._xml_safe(article_row.get("pdPrice", "0")),
+            "pdPharmacySellPrice": self._xml_safe(article_row.get("pdPharmacySellPrice", "0")),
+            "order_id": "0",
+            "quantity": str(quantity),
+            "quantity_confirmed": "0",
+            "RebateInKind": "0",
+            "DiscPct": "0",
+            "ExpiryDate": self._xml_safe(article_row.get("ExpiryDate")),
+            "MeasureName": self._xml_safe(article_row.get("MeasureName")),
+            "ProducerCode": self._xml_safe(article_row.get("ProducerCode")),
+            "MaxPrice": self._xml_safe(article_row.get("MaxPrice", "0")),
+            "NHIFCode": self._xml_safe(article_row.get("NHIFCode")),
+            "NHIFSalePrice": self._xml_safe(article_row.get("NHIFSalePrice", "0")),
+            "NHIFBasePrice": self._xml_safe(article_row.get("NHIFBasePrice", "0")),
+            "NHIFMaxPrice": self._xml_safe(article_row.get("NHIFMaxPrice", "0")),
+            "isMedicalPrescription": self._xml_safe(article_row.get("isMedicalPrescription", "0")),
+            "isWebSaleProhibition": self._xml_safe(article_row.get("isWebSaleProhibition", "0")),
+            "isDrugstoreAllowed": self._xml_safe(article_row.get("isDrugstoreAllowed", "0")),
+            "isDrug": self._xml_safe(article_row.get("isDrug", "0")),
+            "isForRefrigerator": self._xml_safe(article_row.get("isForRefrigerator", "0")),
+            "AdvertismentText": self._xml_safe(article_row.get("AdvertismentText")),
+            "Barcode1": self._xml_safe(article_row.get("Barcode1")),
+            "Barcode2": self._xml_safe(article_row.get("Barcode2")),
+            "Description": self._xml_safe(article_row.get("Description")),
+            "lastupdate": self._xml_safe(article_row.get("lastupdate")),
+            "StockLevel": self._xml_safe(article_row.get("StockLevel", "0")),
+            "promo_count": "0",
+            "json_promo_list": self._xml_safe(article_row.get("json_promo_list", "[]")),
+            "deleted": "0",
+            "id": f"BgShop.model.order.OrderItem-{item_index}",
+        }
 
-    def add_product_to_cart(self, product_name: str, quantity):
-        logger.info("PhoenixPharmaOptimized: Adding product to cart: " + product_name + ", quantity: " + str(quantity))
-        self._search_for_product(product_name)
+    def _encode_order_items_xml(self, items: list[dict[str, Any]]) -> str:
+        row_xml_parts: list[str] = []
+        for item in items:
+            row_xml_parts.append(
+                "<row>"
+                f"<order_item_id>{escape(self._xml_safe(item.get('order_item_id')))}</order_item_id>"
+                f"<item_id>{escape(self._xml_safe(item.get('item_id')))}</item_id>"
+                f"<article_id>{escape(self._xml_safe(item.get('article_id')))}</article_id>"
+                f"<article_number>{escape(self._xml_safe(item.get('article_number')))}</article_number>"
+                f"<CyrName>{escape(self._xml_safe(item.get('CyrName')))}</CyrName>"
+                f"<LatName>{escape(self._xml_safe(item.get('LatName')))}</LatName>"
+                f"<ProducerName>{escape(self._xml_safe(item.get('ProducerName')))}</ProducerName>"
+                f"<BasePrice>{escape(self._xml_safe(item.get('BasePrice')))}</BasePrice>"
+                f"<SalePrice>{escape(self._xml_safe(item.get('SalePrice')))}</SalePrice>"
+                f"<CustomDiscPct>{escape(self._xml_safe(item.get('CustomDiscPct')))}</CustomDiscPct>"
+                f"<CustomDiscType>{escape(self._xml_safe(item.get('CustomDiscType')))}</CustomDiscType>"
+                f"<pdDisc>{escape(self._xml_safe(item.get('pdDisc')))}</pdDisc>"
+                f"<pdPrice>{escape(self._xml_safe(item.get('pdPrice')))}</pdPrice>"
+                f"<pdPharmacySellPrice>{escape(self._xml_safe(item.get('pdPharmacySellPrice')))}</pdPharmacySellPrice>"
+                f"<order_id>{escape(self._xml_safe(item.get('order_id')))}</order_id>"
+                f"<quantity>{escape(self._xml_safe(item.get('quantity')))}</quantity>"
+                f"<quantity_confirmed>{escape(self._xml_safe(item.get('quantity_confirmed')))}</quantity_confirmed>"
+                f"<RebateInKind>{escape(self._xml_safe(item.get('RebateInKind')))}</RebateInKind>"
+                f"<DiscPct>{escape(self._xml_safe(item.get('DiscPct')))}</DiscPct>"
+                f"<ExpiryDate>{escape(self._xml_safe(item.get('ExpiryDate')))}</ExpiryDate>"
+                f"<MeasureName>{escape(self._xml_safe(item.get('MeasureName')))}</MeasureName>"
+                f"<ProducerCode>{escape(self._xml_safe(item.get('ProducerCode')))}</ProducerCode>"
+                f"<MaxPrice>{escape(self._xml_safe(item.get('MaxPrice')))}</MaxPrice>"
+                f"<NHIFCode>{escape(self._xml_safe(item.get('NHIFCode')))}</NHIFCode>"
+                f"<NHIFSalePrice>{escape(self._xml_safe(item.get('NHIFSalePrice')))}</NHIFSalePrice>"
+                f"<NHIFBasePrice>{escape(self._xml_safe(item.get('NHIFBasePrice')))}</NHIFBasePrice>"
+                f"<NHIFMaxPrice>{escape(self._xml_safe(item.get('NHIFMaxPrice')))}</NHIFMaxPrice>"
+                f"<isMedicalPrescription>{escape(self._xml_safe(item.get('isMedicalPrescription')))}</isMedicalPrescription>"
+                f"<isWebSaleProhibition>{escape(self._xml_safe(item.get('isWebSaleProhibition')))}</isWebSaleProhibition>"
+                f"<isDrugstoreAllowed>{escape(self._xml_safe(item.get('isDrugstoreAllowed')))}</isDrugstoreAllowed>"
+                f"<isDrug>{escape(self._xml_safe(item.get('isDrug')))}</isDrug>"
+                f"<isForRefrigerator>{escape(self._xml_safe(item.get('isForRefrigerator')))}</isForRefrigerator>"
+                f"<AdvertismentText>{escape(self._xml_safe(item.get('AdvertismentText')))}</AdvertismentText>"
+                f"<Barcode1>{escape(self._xml_safe(item.get('Barcode1')))}</Barcode1>"
+                f"<Barcode2>{escape(self._xml_safe(item.get('Barcode2')))}</Barcode2>"
+                f"<Description>{escape(self._xml_safe(item.get('Description')))}</Description>"
+                f"<lastupdate>{escape(self._xml_safe(item.get('lastupdate')))}</lastupdate>"
+                f"<StockLevel>{escape(self._xml_safe(item.get('StockLevel')))}</StockLevel>"
+                f"<promo_count>{escape(self._xml_safe(item.get('promo_count')))}</promo_count>"
+                f"<json_promo_list>{escape(self._xml_safe(item.get('json_promo_list')))}</json_promo_list>"
+                f"<deleted>{escape(self._xml_safe(item.get('deleted')))}</deleted>"
+                f"<id>{escape(self._xml_safe(item.get('id')))}</id>"
+                "</row>"
+            )
+
+        item_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><dataset>" + "".join(row_xml_parts) + "</dataset>"
+        return escape(item_xml).replace("\"", "&quot;")
+
+    def _decode_order_item_rows(self, xml_item_list: Any) -> list[dict[str, Any]]:
+        xml_item_list_text = self._xml_safe(xml_item_list).strip()
+        if xml_item_list_text == "":
+            return []
+
+        decoded_xml = html.unescape(xml_item_list_text)
+        try:
+            dataset = self._parse_xml_dataset(decoded_xml)
+        except Exception:
+            return self._decode_order_item_rows_fallback(decoded_xml)
+
+        rows = dataset.get("row")
+        if rows is None:
+            return []
+        if isinstance(rows, list):
+            return [row for row in rows if isinstance(row, dict)]
+        if isinstance(rows, dict):
+            return [rows]
+        return []
+
+    def _decode_order_item_rows_fallback(self, decoded_xml: str) -> list[dict[str, Any]]:
+        fields = (
+            "order_item_id",
+            "item_id",
+            "article_id",
+            "article_number",
+            "CyrName",
+            "LatName",
+            "ProducerName",
+            "BasePrice",
+            "SalePrice",
+            "pdPrice",
+            "quantity",
+            "quantity_confirmed",
+            "ExpiryDate",
+            "MeasureName",
+            "Barcode1",
+            "Barcode2",
+            "Description",
+        )
+        rows: list[dict[str, Any]] = []
+        for match in re.finditer(r"<row>(.*?)</row>", decoded_xml, re.S):
+            row_xml = match.group(1)
+            row: dict[str, Any] = {}
+            for field_name in fields:
+                field_match = re.search(rf"<{field_name}>(.*?)</{field_name}>", row_xml, re.S)
+                if field_match is not None:
+                    row[field_name] = html.unescape(field_match.group(1))
+            if row:
+                rows.append(row)
+        return rows
+
+    def _to_int(self, value: Any) -> int:
+        text_value = self._xml_safe(value).strip()
+        if text_value == "":
+            return 0
+        return int(float(text_value))
+
+    def _get_order_item_key(self, row: dict[str, Any]) -> str | None:
+        article_id = self._xml_safe(row.get("article_id")).strip()
+        if article_id != "":
+            return f"article_id:{article_id}"
+
+        cyr_name = self._xml_safe(row.get("CyrName")).strip()
+        if cyr_name != "":
+            return f"name:{cyr_name}"
+
+        article_number = self._xml_safe(row.get("article_number")).strip()
+        if article_number != "":
+            return f"article_number:{article_number}"
+
+        return None
+
+    def _snapshot_order_state(self) -> dict[str, Any]:
+        quantity_by_key: dict[str, int] = {}
+        total_quantity = 0
+
+        for row in self._order_item_rows:
+            quantity = self._to_int(row.get("quantity", "0"))
+            total_quantity += quantity
+
+            item_key = self._get_order_item_key(row)
+            if item_key is None:
+                continue
+
+            quantity_by_key[item_key] = quantity_by_key.get(item_key, 0) + quantity
+
+        return {
+            "row_count": len(self._order_item_rows),
+            "total_quantity": total_quantity,
+            "quantity_by_key": quantity_by_key,
+        }
+
+    def _order_snapshot_matches(self, expected_snapshot: dict[str, Any]) -> bool:
+        return self._snapshot_order_state() == expected_snapshot
+
+    def _order_addition_applied(self, previous_snapshot: dict[str, Any], article_row: dict[str, Any], quantity: int) -> bool:
+        current_snapshot = self._snapshot_order_state()
+        if current_snapshot["total_quantity"] < previous_snapshot["total_quantity"] + quantity:
+            return False
+
+        item_key = self._get_order_item_key(article_row)
+        if item_key is None:
+            return current_snapshot["row_count"] >= previous_snapshot["row_count"] + 1
+
+        previous_quantity = previous_snapshot["quantity_by_key"].get(item_key, 0)
+        current_quantity = current_snapshot["quantity_by_key"].get(item_key, 0)
+        return current_quantity >= previous_quantity + quantity
+
+    def _reload_order_state(self) -> dict[str, Any]:
+        if self._current_order_row is None:
+            raise RuntimeError("PhoenixPharma: Order state is not initialized before reload")
+
+        order_id = self._xml_safe(self._current_order_row.get("order_id")).strip()
+        if order_id == "":
+            raise RuntimeError("PhoenixPharma: Order ID is missing before reload")
+
+        last_error: Exception | None = None
+        queries = [
+            f"order_id={quote(order_id)}",
+            f"filter_order_id={quote(order_id)}&page=1&start=0&limit=1",
+        ]
+
+        for query in queries:
+            try:
+                response = self._request("GET", "dataset/order/load.php", query=query)
+                dataset = self._parse_xml_dataset(response.text)
+                rows = dataset.get("row")
+                order_row: dict[str, Any] | None = None
+
+                if isinstance(rows, dict):
+                    order_row = rows
+                elif isinstance(rows, list):
+                    for candidate_row in rows:
+                        if not isinstance(candidate_row, dict):
+                            continue
+                        if self._xml_safe(candidate_row.get("order_id")).strip() == order_id:
+                            order_row = candidate_row
+                            break
+                    if order_row is None and len(rows) == 1 and isinstance(rows[0], dict):
+                        order_row = rows[0]
+
+                if isinstance(order_row, dict):
+                    self._current_order_row = order_row
+                    self._order_item_rows = self._decode_order_item_rows(order_row.get("xml_item_list"))
+                    return order_row
+
+                last_error = ValueError(f"PhoenixPharma: Order '{order_id}' was not found during reload")
+            except Exception as exc:
+                last_error = exc
+
+        if last_error is not None:
+            raise last_error
+        raise ValueError(f"PhoenixPharma: Order '{order_id}' was not found during reload")
+
+    def _wait_for_order_addition_confirmation(
+        self,
+        previous_snapshot: dict[str, Any],
+        article_row: dict[str, Any],
+        quantity: int,
+        *,
+        source: str,
+    ) -> bool:
+        if self._order_addition_applied(previous_snapshot, article_row, quantity):
+            return True
+
+        last_reload_error: Exception | None = None
+        for attempt in range(1, self.ORDER_CONFIRMATION_RELOAD_ATTEMPTS + 1):
+            delay_seconds = self.ORDER_CONFIRMATION_RELOAD_DELAY_SECONDS
+            if attempt > 1 and delay_seconds > 0:
+                time.sleep(delay_seconds)
+
+            try:
+                self._reload_order_state()
+            except Exception as exc:
+                last_reload_error = exc
+                logger.warning(
+                    "PhoenixPharma: %s order confirmation reload %s/%s failed: %s",
+                    source,
+                    attempt,
+                    self.ORDER_CONFIRMATION_RELOAD_ATTEMPTS,
+                    exc,
+                )
+                continue
+
+            if self._order_addition_applied(previous_snapshot, article_row, quantity):
+                return True
+
+        if last_reload_error is not None:
+            logger.warning(
+                "PhoenixPharma: %s order confirmation exhausted reload attempts; last reload error: %s",
+                source,
+                last_reload_error,
+            )
+        return False
+
+    def _xpath_literal(self, value: str) -> str:
+        if "'" not in value:
+            return f"'{value}'"
+        if '"' not in value:
+            return f'"{value}"'
+
+        parts = value.split("'")
+        quoted_parts: list[str] = []
+        for index, part in enumerate(parts):
+            quoted_parts.append(f"'{part}'")
+            if index != len(parts) - 1:
+                quoted_parts.append("\"'\"")
+        return "concat(" + ", ".join(quoted_parts) + ")"
+
+    def _get_expected_previous_quantity(self, previous_snapshot: dict[str, Any], article_row: dict[str, Any]) -> int:
+        possible_keys = []
+
+        article_id = self._xml_safe(article_row.get("article_id")).strip()
+        if article_id != "":
+            possible_keys.append(f"article_id:{article_id}")
+
+        product_name = self._xml_safe(article_row.get("CyrName")).strip()
+        if product_name != "":
+            possible_keys.append(f"name:{product_name}")
+
+        article_number = self._xml_safe(article_row.get("article_number")).strip()
+        if article_number != "":
+            possible_keys.append(f"article_number:{article_number}")
+
+        quantity_by_key = previous_snapshot.get("quantity_by_key", {})
+        return max((int(quantity_by_key.get(key, 0)) for key in possible_keys), default=0)
+
+    def _get_order_row_xpath(self, product_name: str) -> str:
+        return (
+            "//table[contains(@class, 'x-grid-item')]"
+            "[.//div[contains(@class, 'x-action-col-icon') and contains(@class, 'fa-trash')]"
+            f" and .//div[contains(@class, 'x-grid-cell-inner') and contains(normalize-space(.), {self._xpath_literal(product_name)})]]"
+        )
+
+    def _get_ui_order_quantity(self, product_name: str) -> int | None:
+        product_name = product_name.strip()
+        if product_name == "":
+            return None
+
+        row_xpath = self._get_order_row_xpath(product_name)
+        quantity_input_xpath = row_xpath + "//input[@role='spinbutton']"
+        quantity_inputs = self.browser.find_elements(By.XPATH, quantity_input_xpath)
+        for quantity_input in quantity_inputs:
+            raw_value = quantity_input.get_attribute("aria-valuenow") or quantity_input.get_attribute("value")
+            if raw_value is None or str(raw_value).strip() == "":
+                continue
+            try:
+                return int(float(str(raw_value).strip()))
+            except ValueError:
+                continue
+        return None
+
+    def _ui_order_addition_applied(self, previous_snapshot: dict[str, Any], article_row: dict[str, Any], quantity: int) -> bool:
+        product_name = self._xml_safe(article_row.get("CyrName")).strip()
+        current_quantity = self._get_ui_order_quantity(product_name)
+        if current_quantity is None:
+            return False
+
+        previous_quantity = self._get_expected_previous_quantity(previous_snapshot, article_row)
+        return current_quantity >= previous_quantity + quantity
+
+    def _wait_for_ui_order_addition_confirmation(
+        self,
+        previous_snapshot: dict[str, Any],
+        article_row: dict[str, Any],
+        quantity: int,
+        *,
+        source: str,
+    ) -> bool:
+        if self._ui_order_addition_applied(previous_snapshot, article_row, quantity):
+            return True
 
         try:
-            self._add_product_to_cart_optimized(quantity)
-        except Exception as e:
-            logger.error("PhoenixPharma: An error occurred while adding product to cart: %s", str(e))
-            close_buttons = self.browser.find_elements(By.XPATH, "//div[contains(@data-qtip,'Close dialog')]")
-            for close_button in close_buttons:
-                try:
-                    close_button.click()
-                    break
-                except Exception as e_inner:
-                    logger.error("PhoenixPharma: An error occurred while closing dialog: %s", str(e_inner))
-                    return None
+            WebDriverWait(
+                self.browser,
+                self.UI_ORDER_CONFIRMATION_TIMEOUT_SECONDS,
+                poll_frequency=self.UI_ORDER_CONFIRMATION_POLL_SECONDS,
+            ).until(lambda _browser: self._ui_order_addition_applied(previous_snapshot, article_row, quantity))
+            return True
+        except TimeoutException:
+            logger.warning(
+                "PhoenixPharma: %s UI confirmation timed out after %.2fs for product '%s'",
+                source,
+                self.UI_ORDER_CONFIRMATION_TIMEOUT_SECONDS,
+                self._xml_safe(article_row.get("CyrName")).strip(),
+            )
+            return False
 
-            self._add_product_to_cart_optimized(quantity)
-
+    def _increase_existing_order_row_quantity(self, product_name: str, quantity: int):
+        row_xpath = self._get_order_row_xpath(product_name)
+        plus_button_xpath = row_xpath + "//a[contains(@class, 'bgnf-button-plus')]"
+        plus_button = self.browser.find_element(By.XPATH, plus_button_xpath)
+        for _ in range(quantity):
+            plus_button.click()
         return True
+
+    def _build_commit_payload(self, order_row: dict[str, Any], items: list[dict[str, Any]]) -> bytes:
+        total_quantity = sum(int(self._xml_safe(item.get("quantity", "0")) or "0") for item in items)
+        total_base_price = sum(float(self._xml_safe(item.get("BasePrice", "0")) or "0") * int(self._xml_safe(item.get("quantity", "0")) or "0") for item in items)
+        total_sale_price = sum(float(self._xml_safe(item.get("SalePrice", "0")) or "0") * int(self._xml_safe(item.get("quantity", "0")) or "0") for item in items)
+        total_base_price_text = f"{total_base_price:.2f}"
+        total_sale_price_text = f"{total_sale_price:.2f}"
+        total_quantity_text = str(total_quantity)
+
+        algo_parts = []
+        for index, item in enumerate(items, start=1):
+            quantity = int(self._xml_safe(item.get("quantity", "0")) or "0")
+            algo_parts.append(
+                "{&quot;i&quot;:"
+                + str(index)
+                + ",&quot;q&quot;:"
+                + str(quantity)
+                + ",&quot;p1&quot;:"
+                + self._xml_safe(item.get("SalePrice", "0"))
+                + ",&quot;p2&quot;:"
+                + self._xml_safe(item.get("pdPrice", "0"))
+                + "}"
+            )
+
+        payload = (
+            "<dataset><row>"
+            f"<order_id>{self._xml_safe(order_row.get('order_id'))}</order_id>"
+            f"<order_type>{self._xml_safe(order_row.get('order_type', 'F'))}</order_type>"
+            f"<order_state_id>{self._xml_safe(order_row.get('order_state_id', '100'))}</order_state_id>"
+            f"<order_partner_id>{self._xml_safe(order_row.get('order_partner_id'))}</order_partner_id>"
+            f"<order_is_to>{self._xml_safe(order_row.get('order_is_to', '0'))}</order_is_to>"
+            f"<order_created>{escape(self._xml_safe(order_row.get('order_created')))}</order_created>"
+            f"<order_created_by>{self._xml_safe(order_row.get('order_created_by', '0'))}</order_created_by>"
+            f"<order_ordered>{escape(self._xml_safe(order_row.get('order_ordered')))}</order_ordered>"
+            f"<order_confirm_user>{self._xml_safe(order_row.get('order_confirm_user', '0'))}</order_confirm_user>"
+            f"<order_ksc>{self._xml_safe(order_row.get('order_ksc', '0'))}</order_ksc>"
+            f"<order_remark>{escape(self._xml_safe(order_row.get('order_remark')))}</order_remark>"
+            f"<order_params>{{&quot;updateSumsLog&quot;:{{&quot;v&quot;:&quot;2&quot;,&quot;discountType&quot;:{self._xml_safe(order_row.get('DiscountTypeIDFree', '0'))},&quot;algo&quot;:[{','.join(algo_parts)}]}}}}</order_params>"
+            f"<order_reference>{escape(self._xml_safe(order_row.get('order_reference')))}</order_reference>"
+            f"<order_crmode>{self._xml_safe(order_row.get('order_crmode', 'create'))}</order_crmode>"
+            f"<deleted>{self._xml_safe(order_row.get('deleted', '0'))}</deleted>"
+            f"<order_item_count>{len(items)}</order_item_count>"
+            f"<TotalQuantity>{total_quantity_text}</TotalQuantity>"
+            f"<TotalBasePrice>{total_base_price_text}</TotalBasePrice>"
+            f"<TotalSalePrice>{total_sale_price_text}</TotalSalePrice>"
+            f"<order_state_description>{escape(self._xml_safe(order_row.get('order_state_description', 'CREATED')))}</order_state_description>"
+            f"<order_branch_number>{self._xml_safe(order_row.get('order_branch_number'))}</order_branch_number>"
+            f"<order_partner_number>{self._xml_safe(order_row.get('order_partner_number'))}</order_partner_number>"
+            f"<order_partner_licence>{escape(self._xml_safe(order_row.get('order_partner_licence')))}</order_partner_licence>"
+            f"<order_partner_name>{escape(self._xml_safe(order_row.get('order_partner_name')))}</order_partner_name>"
+            f"<order_partner_street>{escape(self._xml_safe(order_row.get('order_partner_street')))}</order_partner_street>"
+            f"<DiscountTypeIDFree>{self._xml_safe(order_row.get('DiscountTypeIDFree', '0'))}</DiscountTypeIDFree>"
+            f"<DiscountTypeIDNZOK>{self._xml_safe(order_row.get('DiscountTypeIDNZOK', '0'))}</DiscountTypeIDNZOK>"
+            f"<order_partner_phone>{escape(self._xml_safe(order_row.get('order_partner_phone')))}</order_partner_phone>"
+            f"<order_created_by_realname>{escape(self._xml_safe(order_row.get('order_created_by_realname')))}</order_created_by_realname>"
+            f"<order_created_by_email>{escape(self._xml_safe(order_row.get('order_created_by_email')))}</order_created_by_email>"
+            f"<order_created_by_mail_on_qty_change>{self._xml_safe(order_row.get('order_created_by_mail_on_qty_change', '1'))}</order_created_by_mail_on_qty_change>"
+            f"<order_ordered_by_realname>{escape(self._xml_safe(order_row.get('order_ordered_by_realname')))}</order_ordered_by_realname>"
+            f"<order_ordered_by_email>{escape(self._xml_safe(order_row.get('order_ordered_by_email')))}</order_ordered_by_email>"
+            f"<order_ordered_by_phone>{escape(self._xml_safe(order_row.get('order_ordered_by_phone')))}</order_ordered_by_phone>"
+            f"<pharmosOrderNo>{self._xml_safe(order_row.get('pharmosOrderNo', '0'))}</pharmosOrderNo>"
+            f"<boehringer>{self._xml_safe(order_row.get('boehringer', '0'))}</boehringer>"
+            f"<sendResultErrmsg>{escape(self._xml_safe(order_row.get('sendResultErrmsg', '_')))}</sendResultErrmsg>"
+            f"<xml_item_list>{self._encode_order_items_xml(items)}</xml_item_list>"
+            f"<xml_package_list>{escape(self._xml_safe(order_row.get('xml_package_list')))}</xml_package_list>"
+            f"<whole_protocol_xml>{escape(self._xml_safe(order_row.get('whole_protocol_xml')))}</whole_protocol_xml>"
+            f"<orderTourId>{escape(self._xml_safe(order_row.get('orderTourId')))}</orderTourId>"
+            f"<orderTourDate>{escape(self._xml_safe(order_row.get('orderTourDate')))}</orderTourDate>"
+            f"<AccNatRebateStart>{escape(self._xml_safe(order_row.get('AccNatRebateStart')))}</AccNatRebateStart>"
+            f"<AccNatRebateEnd>{escape(self._xml_safe(order_row.get('AccNatRebateEnd')))}</AccNatRebateEnd>"
+            f"<AccNatRebateGroup>{self._xml_safe(order_row.get('AccNatRebateGroup', '0'))}</AccNatRebateGroup>"
+            f"<order_comment>{escape(self._xml_safe(order_row.get('order_comment')))}</order_comment>"
+            f"<LastStatusCheck>{escape(self._xml_safe(order_row.get('LastStatusCheck')))}</LastStatusCheck>"
+            f"<order_ordered_by>{escape(self._xml_safe(order_row.get('order_ordered_by')))}</order_ordered_by>"
+            f"<tr_order_item_count>{len(items)}</tr_order_item_count>"
+            f"<tr_TotalQuantity>{total_quantity_text}</tr_TotalQuantity>"
+            f"<tr_TotalBasePrice>{total_base_price_text}</tr_TotalBasePrice>"
+            f"<tr_TotalSalePrice>{total_sale_price_text}</tr_TotalSalePrice>"
+            f"<FullOrderValue>{total_sale_price_text}</FullOrderValue>"
+            f"<id>BgShop.model.order.OrderHeader-{max(len(items), 1) + 2}</id>"
+            "</row></dataset>"
+        )
+        return payload.encode("utf-8")
+
+    def _commit_order_items(self, items: list[dict[str, Any]]):
+        if self._current_order_row is None:
+            raise RuntimeError("PhoenixPharma: Order state is not initialized before item commit")
+
+        response = self._request(
+            "POST",
+            "dataset/order/commit.php",
+            query=f"_dc={int(datetime.now().timestamp() * 1000)}",
+            data=self._build_commit_payload(self._current_order_row, items),
+            content_type="application/x-www-form-urlencoded; charset=UTF-8",
+        )
+        dataset = self._parse_xml_dataset(response.text)
+        row = dataset.get("row")
+        if not isinstance(row, dict):
+            raise ValueError("PhoenixPharma: Item commit did not return the expected order row")
+
+        self._current_order_row = row
+        self._order_item_rows = self._decode_order_item_rows(row.get("xml_item_list"))
+
+    def clear_order_items(self):
+        self.remember_action("Clearing Phoenix order items via API")
+        order_row = self._ensure_order_initialized()
+        order_id = self._xml_safe(order_row.get("order_id")).strip()
+        self._commit_order_items([])
+        if not self.verify_cleanup_state():
+            logger.warning(
+                "PhoenixPharmaOptimized: API cleanup left items in order %s, falling back to UI order delete",
+                order_id,
+            )
+            self._delete_order_via_ui(order_id)
+            self._current_order_row = None
+            self._order_item_rows = []
+        self._article_rows_by_name = {}
+        self._ui_order_page_loaded = False
+        return True
+
+    def verify_cleanup_state(self) -> bool:
+        if self._current_order_row is None:
+            return True
+
+        try:
+            self._reload_order_state()
+        except ValueError as exc:
+            if "was not found during reload" in str(exc):
+                return True
+            raise
+        return len(self._order_item_rows) == 0
+
+    def _open_order_list(self):
+        self._wait_until_mask_is_gone(timeout=self.ORDER_DELETE_MASK_TIMEOUT_SECONDS)
+        WebDriverWait(self.browser, 10).until(
+            EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Поръчка')]"))
+        ).click()
+        self._wait_until_mask_is_gone(timeout=self.ORDER_DELETE_MASK_TIMEOUT_SECONDS)
+        WebDriverWait(self.browser, 10).until(
+            EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Списък поръчки')]"))
+        ).click()
+        self._wait_until_mask_is_gone(timeout=self.ORDER_DELETE_MASK_TIMEOUT_SECONDS)
+
+    def _get_order_row_xpath(self, order_id: str) -> str:
+        return (
+            "//div[@class='x-grid-item-container']//table"
+            f"[.//div[contains(@class, 'x-grid-cell-inner') and normalize-space(text())={self._xpath_literal(order_id)}]]"
+        )
+
+    def _get_order_delete_xpath(self, order_id: str) -> str:
+        return self._get_order_row_xpath(order_id) + "//div[contains(@class, 'x-action-col-icon') and contains(@class, 'fa-trash')]"
+
+    def _get_order_delete_confirmation_xpath(self) -> str:
+        return (
+            "//a[.//span[normalize-space(text())='Да' or normalize-space(text())='Yes' or normalize-space(text())='OK']]"
+            "| //span[normalize-space(text())='Да' or normalize-space(text())='Yes' or normalize-space(text())='OK']"
+            "/ancestor::*[@role='button' or self::a][1]"
+        )
+
+    def _wait_until_mask_is_gone_quietly(self, timeout: float):
+        try:
+            WebDriverWait(self.browser, timeout).until_not(
+                EC.presence_of_element_located((By.XPATH, SELECTOR_VISIBLE_MASK))
+            )
+        except TimeoutException:
+            return
+
+    def _click_xpath_when_ready(self, xpath: str, timeout: float, *, mask_timeout: float | None = None):
+        last_error: Exception | None = None
+        effective_mask_timeout = self.ORDER_DELETE_MASK_TIMEOUT_SECONDS if mask_timeout is None else mask_timeout
+
+        for _attempt in range(3):
+            try:
+                self._wait_until_mask_is_gone_quietly(timeout=effective_mask_timeout)
+                element = self._wait_for_interactable_xpath(xpath, timeout=timeout, poll_frequency=0.1)
+                self.browser.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+                self._wait_until_mask_is_gone_quietly(timeout=effective_mask_timeout)
+                try:
+                    element.click()
+                except ElementClickInterceptedException:
+                    self._wait_until_mask_is_gone_quietly(timeout=effective_mask_timeout)
+                    self.browser.execute_script("arguments[0].click();", element)
+                return
+            except (ElementClickInterceptedException, StaleElementReferenceException, TimeoutException) as exc:
+                last_error = exc
+                time.sleep(0.2)
+
+        if last_error is not None:
+            raise last_error
+        raise TimeoutException(f"PhoenixPharmaOptimized: Could not click element for xpath {xpath}")
+
+    def _delete_order_via_ui(self, order_id: str):
+        self.remember_action(f"Deleting Phoenix order {order_id} via UI")
+        row_xpath = self._get_order_row_xpath(order_id)
+        delete_xpath = self._get_order_delete_xpath(order_id)
+        confirmation_xpath = self._get_order_delete_confirmation_xpath()
+        last_error: Exception | None = None
+
+        for attempt in range(1, self.ORDER_DELETE_ATTEMPTS + 1):
+            try:
+                self._open_order_list()
+                self._click_xpath_when_ready(delete_xpath, timeout=10)
+
+                try:
+                    self._click_xpath_when_ready(
+                        confirmation_xpath,
+                        timeout=self.ORDER_DELETE_CONFIRMATION_TIMEOUT_SECONDS,
+                    )
+                except TimeoutException:
+                    logger.warning(
+                        "PhoenixPharmaOptimized: No confirmation button appeared while deleting order %s on attempt %s/%s; continuing with row disappearance check",
+                        order_id,
+                        attempt,
+                        self.ORDER_DELETE_ATTEMPTS,
+                    )
+
+                self._wait_until_mask_is_gone(timeout=self.ORDER_DELETE_MASK_TIMEOUT_SECONDS)
+                WebDriverWait(self.browser, 10).until(
+                    lambda _browser: len(_browser.find_elements(By.XPATH, row_xpath)) == 0
+                )
+                return
+            except (ElementClickInterceptedException, StaleElementReferenceException) as exc:
+                last_error = exc
+                logger.warning(
+                    "PhoenixPharmaOptimized: Order delete attempt %s/%s hit an interactive UI error for order %s: %s",
+                    attempt,
+                    self.ORDER_DELETE_ATTEMPTS,
+                    order_id,
+                    exc.__class__.__name__,
+                )
+            except TimeoutException as exc:
+                last_error = exc
+                logger.warning(
+                    "PhoenixPharmaOptimized: Order delete attempt %s/%s timed out for order %s",
+                    attempt,
+                    self.ORDER_DELETE_ATTEMPTS,
+                    order_id,
+                )
+
+            if attempt < self.ORDER_DELETE_ATTEMPTS:
+                try:
+                    self.browser.refresh()
+                except Exception as refresh_error:
+                    logger.warning(
+                        "PhoenixPharmaOptimized: Failed to refresh browser before retrying order delete for %s: %s",
+                        order_id,
+                        refresh_error,
+                    )
+                time.sleep(self.ORDER_DELETE_RETRY_DELAY_SECONDS)
+
+        if last_error is not None:
+            raise last_error
+        raise TimeoutException(f"PhoenixPharmaOptimized: Failed to delete order {order_id} via UI")
+
+    def _ensure_ui_order_page_loaded(self, *, force_reload: bool = False):
+        if force_reload or not self._ui_order_page_loaded:
+            self.refresh_page()
+            self._ui_order_page_loaded = True
+
+    def _add_product_to_cart_via_ui(self, quantity: int):
+        logger.info("PhoenixPharma:add_product_to_cart(): quantity=%s", quantity)
+        for _ in range(quantity):
+            self._click_xpath_when_ready(
+                self.PRODUCT_PLUS_BUTTON_XPATH,
+                timeout=5,
+                mask_timeout=self.ADD_TO_CART_UI_MASK_TIMEOUT_SECONDS,
+            )
+
+        self.store_temporary_screenshot()
+        self._click_xpath_when_ready(
+            "//span[text()='Добави']",
+            timeout=5,
+            mask_timeout=self.ADD_TO_CART_UI_MASK_TIMEOUT_SECONDS,
+        )
+        return True
+
+    def _apply_ui_order_addition_locally(self, article_row: dict[str, Any], quantity: int):
+        item_key = self._get_order_item_key(article_row)
+        if item_key is None:
+            return
+
+        for existing_row in self._order_item_rows:
+            if self._get_order_item_key(existing_row) != item_key:
+                continue
+            existing_row["quantity"] = str(self._to_int(existing_row.get("quantity", "0")) + quantity)
+            return
+
+        self._order_item_rows.append(self._build_order_item_row(article_row, quantity, len(self._order_item_rows) + 1))
+
+    def add_product_to_cart(self, product_name: str, quantity):
+        self.remember_action(f"Adding product '{product_name}' to Phoenix cart with quantity {quantity} via UI")
+        logger.info("PhoenixPharmaOptimized: Adding product to cart via UI: %s, quantity: %s", product_name, quantity)
+
+        self._ensure_order_initialized()
+        previous_snapshot = self._snapshot_order_state()
+        article_row = self._article_rows_by_name.get(product_name, {"CyrName": product_name})
+        previous_quantity = self._get_expected_previous_quantity(previous_snapshot, article_row)
+
+        self._ensure_ui_order_page_loaded()
+        if previous_quantity > 0:
+            self._increase_existing_order_row_quantity(product_name, quantity)
+        else:
+            if self._search_for_product(product_name) is None:
+                self._ensure_ui_order_page_loaded(force_reload=True)
+                if self._search_for_product(product_name) is None:
+                    raise ValueError(f"PhoenixPharma: UI add-to-cart could not find product '{product_name}'")
+
+            self._add_product_to_cart_via_ui(quantity)
+
+        # The UI grid often lags behind the successful add-to-cart request. Confirm via order reload
+        # before refreshing, otherwise a premature refresh can interrupt the async UI save.
+        if self._wait_for_order_addition_confirmation(previous_snapshot, article_row, quantity, source="UI add-to-cart order reload"):
+            return True
+
+        if self._wait_for_ui_order_addition_confirmation(previous_snapshot, article_row, quantity, source="UI add-to-cart"):
+            self._apply_ui_order_addition_locally(article_row, quantity)
+            return True
+
+        self._ensure_ui_order_page_loaded(force_reload=True)
+        if self._wait_for_order_addition_confirmation(previous_snapshot, article_row, quantity, source="UI add-to-cart order reload after refresh"):
+            return True
+
+        if self._wait_for_ui_order_addition_confirmation(previous_snapshot, article_row, quantity, source="UI add-to-cart after refresh"):
+            self._apply_ui_order_addition_locally(article_row, quantity)
+            return True
+
+        raise ValueError("PhoenixPharma: UI add-to-cart did not change the order as expected")

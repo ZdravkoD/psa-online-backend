@@ -12,8 +12,15 @@ import jwt
 from pubsub_client import AzureWebPubSubServiceClient
 from werkzeug.utils import secure_filename
 
+from api_utils import (
+    build_blob_object_name,
+    parse_distributors_param,
+    parse_int_param,
+    parse_json_param,
+    validate_object_id_param,
+)
 from cosmosdb_client import CosmosDbClient
-from messaging import FileType, ScraperTaskActionType, ScraperTaskItem, ScraperTaskItemStatus, ScraperTaskUpdates, TaskStatus
+from messaging import FileType, ScraperTaskActionType, ScraperTaskItem, ScraperTaskItemStatus, TaskStatus
 from json_encoder import CustomJSONEncoder
 
 app = func.FunctionApp()
@@ -26,6 +33,10 @@ logging.basicConfig(
     format="[%(asctime)s][%(name)s][%(levelname)s]: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
+
+
+def json_body(data, *, default=None, cls=None) -> str:
+    return json.dumps(data, default=default, cls=cls, ensure_ascii=False)
 
 
 @app.route(route="task", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
@@ -104,10 +115,11 @@ def _create_task_json_content(req: func.HttpRequest) -> func.HttpResponse:
             "Please provide the pharmacy_id in the request body.",
             status_code=400
         )
-    distributors = json.loads(str(req.form.get('distributors')))
-    if not distributors:
+    try:
+        distributors = parse_distributors_param(req.form.get('distributors'))
+    except ValueError as err:
         return func.HttpResponse(
-            "Please provide the distributors in the request body.",
+            str(err),
             status_code=400
         )
     if not all(distributor in ["sting", "phoenix"] for distributor in distributors):
@@ -117,6 +129,7 @@ def _create_task_json_content(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     task_item = ScraperTaskItem(
+        id=ObjectId(),
         account_id=ObjectId(),
         file_name="",
         file_data=json_content,
@@ -126,6 +139,11 @@ def _create_task_json_content(req: func.HttpRequest) -> func.HttpResponse:
         task_type=ScraperTaskActionType.START_OVER,
         date_created=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
         date_updated=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        status=ScraperTaskItemStatus(
+            status=TaskStatus.IN_PROGRESS,
+            message="Задачата стартира...",
+            progress=0
+        ),
         report=None
     )
     task_item.status = ScraperTaskItemStatus(
@@ -133,12 +151,12 @@ def _create_task_json_content(req: func.HttpRequest) -> func.HttpResponse:
         message="Задачата стартира...",
         progress=0
     )
-    inserted_id = cosmosDbClient.create_item("tasks", task_item.to_json())
+    inserted_id = cosmosDbClient.create_item("tasks", task_item.to_insert_dict())
     task_item.id = inserted_id
 
     send_message_to_servicebus_queue(task_item.to_json())
 
-    return func.HttpResponse(body=json.dumps({"id": str(task_item.id)}), status_code=201)
+    return func.HttpResponse(body=json_body({"id": str(task_item.id)}), status_code=201)
 
 
 def _create_task_file_content(req: func.HttpRequest) -> func.HttpResponse:
@@ -187,10 +205,11 @@ def _create_task_file_content(req: func.HttpRequest) -> func.HttpResponse:
             "Please provide the pharmacy_id in the request body.",
             status_code=400
         )
-    distributors = json.loads(str(req.form.get('distributors')))
-    if not distributors:
+    try:
+        distributors = parse_distributors_param(req.form.get('distributors'))
+    except ValueError as err:
         return func.HttpResponse(
-            "Please provide the distributors in the request body.",
+            str(err),
             status_code=400
         )
     if not all(distributor in ["sting", "phoenix"] for distributor in distributors):
@@ -210,6 +229,7 @@ def _create_task_file_content(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     task_item = ScraperTaskItem(
+        id=ObjectId(),
         account_id=ObjectId(),
         file_name=filename,
         file_data=blob_storage_url,
@@ -219,6 +239,11 @@ def _create_task_file_content(req: func.HttpRequest) -> func.HttpResponse:
         task_type=ScraperTaskActionType.START_OVER,
         date_created=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
         date_updated=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        status=ScraperTaskItemStatus(
+            status=TaskStatus.IN_PROGRESS,
+            message="Задачата стартира...",
+            progress=0
+        ),
         report=None
     )
     task_item.status = ScraperTaskItemStatus(
@@ -227,22 +252,23 @@ def _create_task_file_content(req: func.HttpRequest) -> func.HttpResponse:
         progress=0
     )
 
-    inserted_id = cosmosDbClient.create_item("tasks", task_item.to_json())
+    inserted_id = cosmosDbClient.create_item("tasks", task_item.to_insert_dict())
     task_item.id = inserted_id
 
     send_message_to_servicebus_queue(task_item.to_json())
 
-    return func.HttpResponse(body=json.dumps({"id": str(task_item.id)}), status_code=201)
+    return func.HttpResponse(body=json_body({"id": str(task_item.id)}), status_code=201)
 
 
 @app.route(route="task/{taskId}", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
 def task(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request to get a task.')
 
-    task_id = req.route_params.get('taskId')
-    if not task_id:
+    try:
+        task_id = validate_object_id_param(req.route_params.get('taskId'), "task ID in the URI")
+    except ValueError as err:
         return func.HttpResponse(
-            "Please provide the task ID in the URI.",
+            str(err),
             status_code=400
         )
 
@@ -253,7 +279,7 @@ def task(req: func.HttpRequest) -> func.HttpResponse:
             status_code=404
         )
 
-    return func.HttpResponse(body=json.dumps(task, default=str), status_code=200, mimetype="application/json")
+    return func.HttpResponse(body=json_body(task, default=str), status_code=200, mimetype="application/json")
 
 
 @app.route(route="tasks", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
@@ -264,13 +290,13 @@ def tasks(req: func.HttpRequest) -> func.HttpResponse:
         filter, projection, sort, skip, limit = _tasks_parse_params(req=req)
     except ValueError as err:
         return func.HttpResponse(
-            body=json.dumps({"error": str(err)}, cls=CustomJSONEncoder),
+            body=json_body({"error": str(err)}, cls=CustomJSONEncoder),
             status_code=400,
             mimetype="application/json")
 
-    tasks = cosmosDbClient.read_items(collection_name="tasks", filter=filter, projection=projection, sort=sort, skip=skip, limit=limit)
+    tasks = cosmosDbClient.read_items(collection_name="tasks", filter=filter, projection=projection, sort=sort, skip=skip, limit=limit)["items"]
 
-    return func.HttpResponse(body=json.dumps(tasks, cls=CustomJSONEncoder), status_code=200, mimetype="application/json")
+    return func.HttpResponse(body=json_body(tasks, cls=CustomJSONEncoder), status_code=200, mimetype="application/json")
 
 
 def _tasks_parse_params(req: func.HttpRequest) -> Tuple[Optional[dict], Optional[dict], Optional[dict], Optional[int], Optional[int]]:
@@ -280,6 +306,7 @@ def _tasks_parse_params(req: func.HttpRequest) -> Tuple[Optional[dict], Optional
 
     # Parse projection param
     projection_param = req.params.get("projection", None)
+    print("projection_param", projection_param)
     projection_dict = parse_json_param(projection_param, "projection")
 
     # Parse sort param
@@ -301,28 +328,27 @@ def _tasks_parse_params(req: func.HttpRequest) -> Tuple[Optional[dict], Optional
 def get_pharmacies(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request to get all pharmacies.')
 
-    tasks = cosmosDbClient.read_items(collection_name="pharmacies")
+    tasks = cosmosDbClient.read_items(collection_name="pharmacies")["items"]
 
-    return func.HttpResponse(body=json.dumps(tasks), status_code=200, mimetype="application/json")
+    return func.HttpResponse(body=json_body(tasks), status_code=200, mimetype="application/json")
 
 
 @app.route(route="distributors", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
 def get_distributors(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request to get all distributors.')
 
-    tasks = cosmosDbClient.read_items(collection_name="distributors")
+    tasks = cosmosDbClient.read_items(collection_name="distributors")["items"]
 
-    return func.HttpResponse(body=json.dumps(tasks), status_code=200, mimetype="application/json")
+    return func.HttpResponse(body=json_body(tasks), status_code=200, mimetype="application/json")
 
 
 def upload_file_bytes_to_blob_storage(filename: str, file_data: bytes):
     connection_string = os.getenv("AZURE_BLOB_STORAGE_CONNECTION_STRING", "")
-    logger.info(f"connection_string {connection_string}")
     container_name = os.getenv("AZURE_BLOB_STORAGE_INPUT_FILES_CONTAINER_NAME", "")
-    logger.info(f"container_name {container_name}")
+    logger.info("Uploading input file to blob container %s", container_name)
     blob_service_client = BlobServiceClient.from_connection_string(connection_string)
     container_client: ContainerClient = blob_service_client.get_container_client(container_name)
-    blob_client: BlobClient = container_client.get_blob_client(filename)
+    blob_client: BlobClient = container_client.get_blob_client(build_blob_object_name(filename))
     blob_client.upload_blob(file_data, overwrite=True)
     return blob_client.url
 
@@ -418,7 +444,137 @@ def get_input_file(req: func.HttpRequest) -> func.HttpResponse:
     })
 
 
-@app.service_bus_queue_trigger(arg_name="msg", queue_name=os.getenv("psaonline_SERVICEBUS_QUEUE_TASK_UPDATES", ""), connection="psaonline_SERVICEBUS")
+@app.route(route="products", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
+def get_product_names(req: func.HttpRequest) -> func.HttpResponse:
+    logging.info('Python HTTP trigger function processed a request to get products')
+
+    try:
+        filter, projection, sort, skip, limit = _product_names_parse_params(req=req)
+    except ValueError as err:
+        return func.HttpResponse(
+            body=json_body({"error": str(err)}, cls=CustomJSONEncoder),
+            status_code=400,
+            mimetype="application/json")
+
+    result = cosmosDbClient.read_items(
+        collection_name="product_name_variations",
+        filter=filter,
+        projection=projection,
+        sort=sort,
+        skip=skip,
+        limit=limit or 50  # Default page size is 50
+    )
+
+    return func.HttpResponse(body=json_body(result, cls=CustomJSONEncoder), status_code=200, mimetype="application/json")
+
+
+def _product_names_parse_params(req: func.HttpRequest) -> Tuple[Optional[dict], Optional[dict], Optional[dict], Optional[int], Optional[int]]:
+    # Parse filter param
+    filter_param = req.params.get("filter", None)
+    filter_dict = parse_json_param(filter_param, "filter")
+
+    # Ensure filtering by original_product_name if provided
+    if filter_dict and "original_product_name" in filter_dict:
+        filter_dict = {"original_product_name": {"$regex": filter_dict["original_product_name"], "$options": "i"}}
+
+    # Parse projection param
+    projection_param = req.params.get("projection", None)
+    projection_dict = parse_json_param(projection_param, "projection")
+
+    # Parse sort param
+    sort_param = req.params.get("sort", None)
+    sort_dict = parse_json_param(sort_param, "sort")
+
+    # Parse skip param (integer)
+    skip_param = req.params.get("skip", None)
+    skip = parse_int_param(skip_param, "skip")
+
+    # Parse limit param (integer)
+    limit_param = req.params.get("limit", None)
+    limit = parse_int_param(limit_param, "limit")
+
+    return filter_dict, projection_dict, sort_dict, skip, limit
+
+
+@app.route(route="product/{id}", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
+def get_product(req: func.HttpRequest) -> func.HttpResponse:
+    logging.info('Python HTTP trigger function processed a request to get a product name.')
+
+    try:
+        product_id = validate_object_id_param(req.route_params.get('id'), "product ID in the URI")
+    except ValueError as err:
+        return func.HttpResponse(
+            str(err),
+            status_code=400
+        )
+
+    try:
+        product = cosmosDbClient.read_item_by_id("product_name_variations", product_id)
+    except Exception as e:
+        logging.error(f"Failed to get product name: {e}")
+        return func.HttpResponse(
+            "Failed to get product name.",
+            status_code=500
+        )
+
+    return func.HttpResponse(body=json_body(product, cls=CustomJSONEncoder), status_code=200, mimetype="application/json")
+
+
+@app.route(route="product/{id}", auth_level=func.AuthLevel.ANONYMOUS, methods=["PATCH"])
+def update_product_name(req: func.HttpRequest) -> func.HttpResponse:
+    logging.info('Python HTTP trigger function processed a request to update a product name.')
+
+    try:
+        req_body = req.get_json()
+    except ValueError:
+        return func.HttpResponse(
+            "Invalid JSON payload.",
+            status_code=400
+        )
+
+    try:
+        product_id = validate_object_id_param(req.route_params.get('id'), "product ID in the URI")
+    except ValueError as err:
+        return func.HttpResponse(
+            str(err),
+            status_code=400
+        )
+
+    update_fields = {}
+    if "custom_product_name_variations" in req_body:
+        update_fields["custom_product_name_variations"] = req_body["custom_product_name_variations"]
+
+    if not update_fields:
+        return func.HttpResponse(
+            "No valid fields to update provided.",
+            status_code=400
+        )
+
+    try:
+        modified_count = cosmosDbClient.update_item(
+            collection_name="product_name_variations",
+            item_id=product_id,
+            document=update_fields
+        )
+
+        if modified_count == 0:
+            return func.HttpResponse(
+                "Product name not found.",
+                status_code=404
+            )
+
+        updated_product = cosmosDbClient.read_item_by_id("product_name_variations", product_id)
+    except Exception as e:
+        logging.error(f"Failed to update product name: {e}")
+        return func.HttpResponse(
+            "Failed to update product name.",
+            status_code=500
+        )
+
+    return func.HttpResponse(body=json_body(updated_product, cls=CustomJSONEncoder), status_code=200, mimetype="application/json")
+
+
+@app.service_bus_queue_trigger(arg_name="msg", queue_name=os.getenv("psaonline_SERVICEBUS_QUEUE_TASK_UPDATES", "task-updates"), connection="psaonline_SERVICEBUS")
 def servicebus_trigger__task_updates(msg: func.ServiceBusMessage):
     """
     Example message body:
@@ -432,34 +588,15 @@ def servicebus_trigger__task_updates(msg: func.ServiceBusMessage):
     """
     logging.info(f'Received Service Bus message for task update: {msg.get_body().decode()}')
     msg_dict = json.loads(msg.get_body().decode())
-    msg_object = ScraperTaskUpdates(**msg_dict)
-    task_id: str = str(msg_object.task_id)
+    msg_object = ScraperTaskItem.from_dict(msg_dict)
+    task_id: str = str(msg_object.id)
 
     task: ScraperTaskItem = ScraperTaskItem.from_dict(cosmosDbClient.read_item_by_id("tasks", task_id) or {})
     task.date_updated = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     task.status = msg_object.status
     task.report = msg_object.report
     task.image_urls = msg_object.image_urls
-    cosmosDbClient.update_item("tasks", task.id, task.to_update_dict())
+    cosmosDbClient.update_item("tasks", task.id, task.to_insert_dict())
 
     AzureWebPubSubServiceClient().send_task_update_to_all(msg_dict)
 
-
-def parse_json_param(param_value: Optional[str], param_name: str) -> Optional[dict]:
-    """Helper function to parse a JSON string parameter."""
-    if not param_value or param_value.strip() == "":
-        return None
-    try:
-        return json.loads(param_value)
-    except json.JSONDecodeError:
-        raise ValueError(f"Invalid JSON in {param_name} parameter")
-
-
-def parse_int_param(param_value: Optional[str], param_name: str) -> Optional[int]:
-    """Helper function to parse an integer parameter."""
-    if not param_value or param_value.strip() == "":
-        return None
-    try:
-        return int(param_value)
-    except ValueError:
-        raise ValueError(f"Invalid integer in {param_name} parameter")

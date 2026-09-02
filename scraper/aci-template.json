@@ -1,0 +1,118 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "containerGroupName": { "type": "string" },
+    "location": { "type": "string" },
+    "imageName": { "type": "string" },
+    "containerIdentityId": { "type": "string" },
+    "registryServer": { "type": "string" },
+    "alerterEmail": { "type": "string" },
+    "envStingConfig": { "type": "string" },
+    "envPhoenixConfig": { "type": "string" },
+    "envServiceBusConn": { "type": "string" },
+    "envBlobConn": { "type": "string" },
+    "envCosmosConn": { "type": "string" }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ContainerInstance/containerGroups",
+      "apiVersion": "2021-03-01",
+      "name": "[parameters('containerGroupName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[parameters('containerIdentityId')]": {}
+        }
+      },
+      "properties": {
+        "osType": "Linux",
+        "containers": [
+          {
+            "name": "scraper-container",
+            "properties": {
+              "image": "[parameters('imageName')]",
+              "resources": { "requests": { "cpu": 1.0, "memoryInGB": 1.5 } },
+              "environmentVariables": [
+                { "name": "AZURE_SERVICE_BUS_CONNECTION_STRING", "value": "[parameters('envServiceBusConn')]" },
+                { "name": "AZURE_SERVICE_BUS_QUEUE_NAME", "value": "task-queue" },
+                { "name": "AZURE_SERVICE_BUS_TASK_UPDATES_QUEUE_NAME", "value": "task-updates" },
+                { "name": "AZURE_BLOB_STORAGE_CONNECTION_STRING", "value": "[parameters('envBlobConn')]" },
+                { "name": "AZURE_BLOB_STORAGE_INPUT_FILES_CONTAINER_NAME", "value": "input-files" },
+                { "name": "AZURE_BLOB_STORAGE_OUTPUT_FILES_CONTAINER_NAME", "value": "output-files" },
+                { "name": "AZURE_BLOB_STORAGE_LOG_FILES_CONTAINER_NAME", "value": "log-files" },
+                { "name": "AZURE_COSMOS_DB_CONNECTION_STRING", "value": "[parameters('envCosmosConn')]" },
+                { "name": "STING_CONFIG", "value": "[parameters('envStingConfig')]" },
+                { "name": "PHOENIX_CONFIG", "value": "[parameters('envPhoenixConfig')]" }
+              ],
+              "livenessProbe": {
+                "exec": {
+                  "command": ["/bin/sh", "-c", "pgrep -f task_handler || true"]
+                },
+                "initialDelaySeconds": 10,
+                "periodSeconds": 30
+              },
+              "readinessProbe": {
+                "exec": {
+                  "command": ["/bin/sh", "-c", "pgrep -f task_handler || true"]
+                },
+                "initialDelaySeconds": 5,
+                "periodSeconds": 15
+              }
+            }
+          }
+        ],
+        "restartPolicy": "Always"
+      }
+    },
+    {
+      "type": "Microsoft.Insights/actionGroups",
+      "apiVersion": "2019-06-01",
+      "name": "scraper-container-alerts-ag",
+      "location": "Global",
+      "properties": {
+        "groupShortName": "scraperAG",
+        "enabled": true,
+        "emailReceivers": [
+          {
+            "name": "owner-email",
+            "emailAddress": "[parameters('alerterEmail')]"
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Insights/activityLogAlerts",
+      "apiVersion": "2019-06-01",
+      "name": "scraper-image-pull-failed-alert",
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups','scraper-container-alerts-ag')]"
+      ],
+      "properties": {
+        "scopes": [
+          "[resourceId('Microsoft.ContainerInstance/containerGroups', parameters('containerGroupName'))]"
+        ],
+        "condition": {
+          "allOf": [
+            {
+              "field": "category",
+              "equals": "Administrative"
+            },
+            {
+              "field": "status",
+              "equals": "Failed"
+            }
+          ]
+        },
+        "actions": {
+          "actionGroups": [
+            {
+              "actionGroupId": "[resourceId('Microsoft.Insights/actionGroups','scraper-container-alerts-ag')]"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
