@@ -113,11 +113,25 @@ class PhoenixPharmaOptimized(PhoenixPharma):
                     query=f"_dc=1&query={quote(self.pharmacyID)}&DaysDisableCashOnDelivery=11&page=1&start=0&limit=10",
                 )
                 dataset = self._parse_xml_dataset(response.text)
-                partner_row = dataset.get("row")
-                if isinstance(partner_row, dict):
-                    self._partner_row = partner_row
-                    return partner_row
-                last_error = ValueError(f"Phoenix partner with pharmacy ID '{self.pharmacyID}' was not found.")
+                rows = dataset.get("row")
+                if isinstance(rows, dict):
+                    rows = [rows]
+                elif not isinstance(rows, list):
+                    rows = []
+
+                matches = [
+                    row for row in rows
+                    if isinstance(row, dict) and row.get("IDF") == self.pharmacyID
+                ]
+                if len(matches) == 1:
+                    self._partner_row = matches[0]
+                    return self._partner_row
+                if matches:
+                    raise ValueError(f"Phoenix returned multiple partners with pharmacy ID '{self.pharmacyID}'.")
+                raise ValueError(
+                    f"Phoenix partner with pharmacy ID '{self.pharmacyID}' was not found "
+                    f"among {len(rows)} returned records."
+                )
             except Exception as exc:
                 last_error = exc
 

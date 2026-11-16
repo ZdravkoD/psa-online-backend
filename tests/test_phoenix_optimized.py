@@ -44,6 +44,37 @@ SPEC.loader.exec_module(phoenix_optimized_module)
 
 
 class PhoenixOptimizedPayloadTests(unittest.TestCase):
+    def test_partner_lookup_requires_one_exact_pharmacy_id(self):
+        exact = {"IDF": "2075077", "partner_id": "4291"}
+        partial = {"IDF": "20750770", "partner_id": "4292"}
+        duplicate = {"IDF": "2075077", "partner_id": "4293"}
+        cases = [
+            (exact, None),
+            ([partial, exact], None),
+            (partial, "was not found among 1 returned records"),
+            (None, "was not found among 0 returned records"),
+            ([exact, duplicate], "multiple partners"),
+        ]
+
+        for rows, error in cases:
+            with self.subTest(rows=rows):
+                phoenix = object.__new__(phoenix_optimized_module.PhoenixPharmaOptimized)
+                phoenix.pharmacyID = "2075077"
+                phoenix._partner_row = None
+                phoenix.PARTNER_LOOKUP_ATTEMPTS = 1
+                phoenix.remember_action = mock.Mock()
+                phoenix._request = mock.Mock()
+                phoenix._parse_xml_dataset = mock.Mock(return_value={"row": rows})
+
+                if error is None:
+                    self.assertIs(phoenix._ensure_partner_loaded(), exact)
+                    self.assertIs(phoenix._ensure_partner_loaded(), exact)
+                    phoenix._request.assert_called_once()
+                else:
+                    with self.assertRaisesRegex(ValueError, error):
+                        phoenix._ensure_partner_loaded()
+                    self.assertIsNone(phoenix._partner_row)
+
     def test_request_marks_phoenix_api_call_as_xhr(self):
         phoenix = phoenix_optimized_module.PhoenixPharmaOptimized.__new__(phoenix_optimized_module.PhoenixPharmaOptimized)
         phoenix.browser = mock.Mock()
