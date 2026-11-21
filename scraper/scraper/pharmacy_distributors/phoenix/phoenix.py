@@ -3,7 +3,6 @@ import math
 from typing import Tuple
 
 from pharmacy_distributors.common.models import ScrapedProductInfo
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -140,7 +139,19 @@ class PhoenixPharma(BrowserCommon):
         self.browser.find_element(By.CSS_SELECTOR, "input[name='loginPasswordText']").send_keys(self.password)
         self.store_temporary_screenshot()
         self.remember_action("Submitting Phoenix login form")
-        self.browser.find_element(By.CSS_SELECTOR, "input[name='loginPasswordText']").send_keys(Keys.RETURN)
+        WebDriverWait(self.browser, 20).until(
+            EC.element_to_be_clickable((By.XPATH, "//span[normalize-space(text())='Въведи']/ancestor::a"))
+        ).click()
+        self.remember_action("Waiting for Phoenix login to complete")
+        try:
+            WebDriverWait(self.browser, 30).until(
+                EC.element_to_be_clickable((By.XPATH, "//span[normalize-space(text())='Изход']/ancestor::a"))
+            )
+        except TimeoutException as exc:
+            self.store_temporary_screenshot()
+            raise RuntimeError(
+                "Phoenix login did not complete: the authenticated toolbar did not appear."
+            ) from exc
 
     def prepare_for_order(self):
         self.remember_action("Opening Phoenix order menu")

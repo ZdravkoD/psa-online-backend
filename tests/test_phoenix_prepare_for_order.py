@@ -64,6 +64,66 @@ SPEC.loader.exec_module(phoenix_module)
 
 
 class PhoenixPrepareForOrderTests(unittest.TestCase):
+    def test_login_clicks_submit_and_waits_for_authenticated_toolbar(self):
+        phoenix = object.__new__(phoenix_module.PhoenixPharma)
+        phoenix.browser = mock.Mock()
+        phoenix.username = "test-user"
+        phoenix.password = "test-password"
+        phoenix.DUMMY_PAGE = "https://example.test/dummy"
+        phoenix.LOGIN_PAGE = "https://example.test/login"
+        phoenix.open_url = mock.Mock()
+        phoenix.remember_action = mock.Mock()
+        submit = mock.Mock()
+        submit_wait = mock.Mock()
+        submit_wait.until.return_value = submit
+        authenticated_wait = mock.Mock()
+        events = mock.Mock()
+        events.attach_mock(submit.click, "submit")
+        events.attach_mock(authenticated_wait.until, "authenticated")
+
+        with mock.patch.object(
+            phoenix_module, "WebDriverWait", side_effect=[submit_wait, authenticated_wait]
+        ):
+            phoenix.login()
+
+        self.assertEqual(
+            events.mock_calls,
+            [
+                mock.call.submit(),
+                mock.call.authenticated((
+                    "xpath", "//span[normalize-space(text())='Изход']/ancestor::a"
+                )),
+            ],
+        )
+        submit_wait.until.assert_called_once_with((
+            "xpath", "//span[normalize-space(text())='Въведи']/ancestor::a"
+        ))
+        phoenix.browser.find_element.return_value.send_keys.assert_has_calls([
+            mock.call("test-user"), mock.call("test-password")
+        ])
+        self.assertEqual(phoenix.browser.find_element.return_value.send_keys.call_count, 2)
+
+    def test_login_fails_if_authenticated_toolbar_never_appears(self):
+        phoenix = object.__new__(phoenix_module.PhoenixPharma)
+        phoenix.browser = mock.Mock()
+        phoenix.username = "test-user"
+        phoenix.password = "test-password"
+        phoenix.DUMMY_PAGE = "https://example.test/dummy"
+        phoenix.LOGIN_PAGE = "https://example.test/login"
+        phoenix.open_url = mock.Mock()
+        phoenix.store_temporary_screenshot = mock.Mock()
+        authenticated_wait = mock.Mock()
+        authenticated_wait.until.side_effect = selenium_exceptions_module.TimeoutException()
+
+        with mock.patch.object(
+            phoenix_module, "WebDriverWait", side_effect=[mock.Mock(), authenticated_wait]
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Phoenix login did not complete"):
+                phoenix.login()
+
+        self.assertEqual(phoenix.last_action, "Waiting for Phoenix login to complete")
+        phoenix.store_temporary_screenshot.assert_called()
+
     def test_prepare_for_order_fails_immediately_when_client_selection_fails(self):
         phoenix = phoenix_module.PhoenixPharma.__new__(phoenix_module.PhoenixPharma)
         phoenix.pharmacyID = "tolstoy"
