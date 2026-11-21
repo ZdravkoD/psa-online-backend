@@ -1,5 +1,8 @@
 import logging
 import math
+import os
+from tempfile import mkstemp
+from uuid import uuid4
 from typing import Tuple
 
 from pharmacy_distributors.common.models import ScrapedProductInfo
@@ -41,8 +44,6 @@ class PhoenixPharma(BrowserCommon):
         else:
             raise ValueError("Pharmacy ID not found in Phoenix config")
 
-        # self.username = 'pc541dibo'
-        # self.password = 'pc541dibo'
 
         self.SEARCH_BOX_XPATH = "//fieldset[starts-with(@aria-label, 'Търсене в номенклатура')]//input[starts-with(@id,'textfield')" \
                                 + " and "\
@@ -133,11 +134,10 @@ class PhoenixPharma(BrowserCommon):
             raise last_error
 
         self.store_temporary_screenshot()
-        self.remember_action(f"Entering Phoenix username for pharmacy {self.username}")
+        self.remember_action("Entering Phoenix credentials")
         self.browser.find_element(By.CSS_SELECTOR, "input[name='loginUsername']").send_keys(self.username)
         self.browser.find_element(By.CSS_SELECTOR, "input[name='loginPasswordText']").click()
         self.browser.find_element(By.CSS_SELECTOR, "input[name='loginPasswordText']").send_keys(self.password)
-        self.store_temporary_screenshot()
         self.remember_action("Submitting Phoenix login form")
         WebDriverWait(self.browser, 20).until(
             EC.element_to_be_clickable((By.XPATH, "//span[normalize-space(text())='Въведи']/ancestor::a"))
@@ -145,13 +145,45 @@ class PhoenixPharma(BrowserCommon):
         self.remember_action("Waiting for Phoenix login to complete")
         try:
             WebDriverWait(self.browser, 30).until(
-                EC.element_to_be_clickable((By.XPATH, "//span[normalize-space(text())='Изход']/ancestor::a"))
+                EC.element_to_be_clickable((By.XPATH, "//span[normalize-space(text())='Поръчка']/ancestor::a"))
             )
         except TimeoutException as exc:
-            self.store_temporary_screenshot()
+            evidence = self._save_login_timeout_screenshot()
+            logger.warning("Phoenix login timed out. %s", evidence)
             raise RuntimeError(
-                "Phoenix login did not complete: the authenticated toolbar did not appear."
+                f"Phoenix login did not complete: the authenticated toolbar did not appear. {evidence}"
             ) from exc
+
+    def _save_login_timeout_screenshot(self):
+        try:
+            self.browser.execute_script("""
+                for (const input of document.querySelectorAll('input, textarea')) {
+                    input.style.setProperty('visibility', 'hidden', 'important');
+                }
+            """)
+            png = self.browser.get_screenshot_as_png()
+            if not png:
+                raise ValueError("Empty screenshot")
+        except Exception:
+            logger.warning("Phoenix login timeout screenshot capture failed", exc_info=True)
+            return "Screenshot capture failed."
+
+        name = f"Phoenix_LoginTimeout_{uuid4().hex}.png"
+        try:
+            from files.azure_blob_client import AzureBlobClient
+            blobs = AzureBlobClient()
+            blobs.upload_blob_to_output_container(name, png)
+            return f"Screenshot in Azure Blob Storage: {blobs.output_container_name}/{name}"
+        except Exception:
+            logger.warning("Phoenix login timeout screenshot upload failed", exc_info=True)
+        try:
+            fd, path = mkstemp(prefix="Phoenix_LoginTimeout_", suffix=".png")
+            with os.fdopen(fd, "wb") as output:
+                output.write(png)
+            return f"Screenshot on scraper host: {path}"
+        except OSError:
+            logger.warning("Phoenix login timeout screenshot file write failed", exc_info=True)
+            return "Screenshot could not be saved."
 
     def prepare_for_order(self):
         self.remember_action("Opening Phoenix order menu")

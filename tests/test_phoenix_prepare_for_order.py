@@ -91,7 +91,7 @@ class PhoenixPrepareForOrderTests(unittest.TestCase):
             [
                 mock.call.submit(),
                 mock.call.authenticated((
-                    "xpath", "//span[normalize-space(text())='Изход']/ancestor::a"
+                    "xpath", "//span[normalize-space(text())='Поръчка']/ancestor::a"
                 )),
             ],
         )
@@ -113,16 +113,24 @@ class PhoenixPrepareForOrderTests(unittest.TestCase):
         phoenix.open_url = mock.Mock()
         phoenix.store_temporary_screenshot = mock.Mock()
         authenticated_wait = mock.Mock()
-        authenticated_wait.until.side_effect = selenium_exceptions_module.TimeoutException()
+        authenticated_wait.until.side_effect = phoenix_module.TimeoutException()
+        phoenix.browser.get_screenshot_as_png.return_value = b"test-png"
+        blobs = mock.Mock(output_container_name="test-output")
+        blob_module = types.SimpleNamespace(AzureBlobClient=lambda: blobs)
+        patcher = mock.patch.dict(sys.modules, {"files.azure_blob_client": blob_module})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
         with mock.patch.object(
             phoenix_module, "WebDriverWait", side_effect=[mock.Mock(), authenticated_wait]
         ):
-            with self.assertRaisesRegex(RuntimeError, "Phoenix login did not complete"):
+            with self.assertRaisesRegex(RuntimeError, r"test-output/Phoenix_LoginTimeout_") as error:
                 phoenix.login()
 
         self.assertEqual(phoenix.last_action, "Waiting for Phoenix login to complete")
-        phoenix.store_temporary_screenshot.assert_called()
+        name = str(error.exception).split("/")[-1]
+        blobs.upload_blob_to_output_container.assert_called_once_with(name, b"test-png")
+        phoenix.browser.execute_script.assert_called_once()
 
     def test_prepare_for_order_fails_immediately_when_client_selection_fails(self):
         phoenix = phoenix_module.PhoenixPharma.__new__(phoenix_module.PhoenixPharma)

@@ -31,6 +31,8 @@ Artifacts are stored under `/private/tmp/psa-deployed-task-debug/<task-id>/`.
 
 If the script reports that the Azure session is expired but the current run is non-interactive, rerun it in a normal terminal session so `az login` can complete.
 
+Keep using the user's normal Azure CLI profile at `~/.azure`; do not redirect `AZURE_CONFIG_DIR` to a temporary directory to bypass a write/access problem. First distinguish expired authentication from an inaccessible config/cache directory using the exact `az account show` error. If this task environment cannot access the host profile, use the available host/local CLI execution path; ask the user to intervene only when no such path is available.
+
 ## After the script finishes
 
 1. Read the task summary and `detailed_error_message`.
@@ -38,8 +40,11 @@ If the script reports that the Azure session is expired but the current run is n
 3. Inspect the input workbook preview to see whether the failure might be data-specific.
 4. If the error is clearly browser-flow related, inspect the likely scraper files the script reports.
 5. If deployed-only behavior is still unclear, collect Azure logs next.
+6. After publishing a fix, verify deployed behavior with a representative task or smoke check and inspect the matching runtime logs. Report publish success separately from successful runtime verification.
 
 ## Azure log workflow
+
+Use Git CLI, Azure CLI, and Azure Functions Core Tools for deployment and verification; do not use editor UI clicks when the CLI is available. Keep staging and production explicit. Follow the repository's manual-test instruction to test against Tolstoy before broader checks.
 
 The helper script already checks Azure auth first. If you need to do it manually, start with:
 

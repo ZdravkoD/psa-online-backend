@@ -31,9 +31,10 @@ The scraper does not have checked-in local config files. It expects distributor 
 The helper script loads that file and exports the expected env vars before importing scraper modules.
 
 Selenium note:
-- ChromeDriver binds a localhost port during startup.
-- Inside the Codex sandbox this fails with `PermissionError: [Errno 1] Operation not permitted` from Selenium's `free_port()`.
-- So real browser repros must be run in a normal terminal session, or via an escalated command, not inside the restricted sandbox.
+- Do not assume a browser startup failure is caused by the sandbox. Read the actual traceback first.
+- If it specifically fails in Selenium's `free_port()` with `PermissionError: [Errno 1] Operation not permitted`, the environment blocked localhost port binding; rerun through an available normal local terminal/host execution path.
+- If ChromeDriver reports `session not created` or Chrome exits, capture ChromeDriver/browser logs and inspect the browser binary, flags, profile directory, and runtime compatibility. That message alone does not prove a port-binding restriction.
+- Record the observed exception and the execution environment in the diagnosis. Do not change application selectors or waits until browser startup and first navigation are confirmed to work.
 
 Minimal config shape:
 
