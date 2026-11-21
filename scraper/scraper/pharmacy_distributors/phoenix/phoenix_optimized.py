@@ -6,10 +6,9 @@ import re
 import time
 from datetime import datetime
 from typing import Any, Optional, Tuple
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote
 from xml.sax.saxutils import escape
 
-import requests
 import xmltodict
 from pharmacy_distributors.common.models import ScrapedProductInfo
 from selenium.common.exceptions import (
@@ -57,12 +56,6 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         self.remember_action("Preparing Phoenix order via API")
         self._ensure_order_initialized()
 
-    def _get_php_session_id(self) -> str:
-        php_session_id_cookie = self.browser.get_cookie("PHPSESSID")
-        if php_session_id_cookie is None or not php_session_id_cookie.get("value"):
-            raise RuntimeError("PhoenixPharma: PHPSESSID cookie is missing")
-        return str(php_session_id_cookie["value"])
-
     def _request(
         self,
         method: str,
@@ -71,26 +64,33 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         query: str = "",
         data: str | bytes | None = None,
         content_type: str | None = None,
-    ):
-        headers = {
-            "Cookie": f"PHPSESSID={self._get_php_session_id()}",
-            "X-Requested-With": "XMLHttpRequest",
+    ) -> str:
+        # Let the Phoenix client apply the same session settings as the customer picker.
+        options = {
+            "url": "resources/php/" + path,
+            "method": method,
+            "timeout": self.REQUEST_TIMEOUT_SECONDS * 1000,
+            "params": dict(parse_qsl(query, keep_blank_values=True)),
         }
-        if content_type is not None:
-            headers["Content-Type"] = content_type
-        url = "https://b2b.phoenixpharma.bg/bg/build/production/BgShop/resources/php/" + path
-        if query:
-            url += "?" + query
+        if data is not None:
+            options["rawData"] = data.decode("utf-8") if isinstance(data, bytes) else data
+        if content_type:
+            options["headers"] = {"Content-Type": content_type}
 
-        response = requests.request(
-            method=method,
-            url=url,
-            headers=headers,
-            data=data,
-            timeout=self.REQUEST_TIMEOUT_SECONDS,
+        self.browser.set_script_timeout(self.REQUEST_TIMEOUT_SECONDS + 5)
+        status, body = self.browser.execute_async_script(
+            """
+            const [options, done] = arguments;
+            options.callback = function (_, success, response) {
+                done([response.status, success ? response.responseText : ""]);
+            };
+            Ext.Ajax.request(options);
+            """,
+            options,
         )
-        response.raise_for_status()
-        return response
+        if not 200 <= status < 300:
+            raise RuntimeError(f"Phoenix {method} {path} failed with HTTP status {status}")
+        return body
 
     def _parse_xml_dataset(self, xml_text: str) -> dict[str, Any]:
         parsed = xmltodict.parse(xml_text)
@@ -110,9 +110,9 @@ class PhoenixPharmaOptimized(PhoenixPharma):
                 response = self._request(
                     "GET",
                     "combo/partner.php",
-                    query=f"_dc=1&query={quote(self.pharmacyID)}&DaysDisableCashOnDelivery=11&page=1&start=0&limit=10",
+                    query=f"query={quote(self.pharmacyID)}&DaysDisableCashOnDelivery=11&page=1&start=0&limit=10",
                 )
-                dataset = self._parse_xml_dataset(response.text)
+                dataset = self._parse_xml_dataset(response)
                 rows = dataset.get("row")
                 if isinstance(rows, dict):
                     rows = [rows]
@@ -157,7 +157,7 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         self.remember_action("Creating Phoenix order via API")
 
         assign_response = self._request("GET", "dataset/order/assignId.php", query="_dc=1")
-        order_id = assign_response.json()["order_id"]
+        order_id = json.loads(assign_response)["order_id"]
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         order_payload = (
@@ -215,7 +215,7 @@ class PhoenixPharmaOptimized(PhoenixPharma):
             data=order_payload.encode("utf-8"),
             content_type="application/x-www-form-urlencoded; charset=UTF-8",
         )
-        dataset = self._parse_xml_dataset(response.text)
+        dataset = self._parse_xml_dataset(response)
         row = dataset.get("row")
         if not isinstance(row, dict):
             raise ValueError("PhoenixPharma: Order creation did not return the expected order row")
@@ -237,7 +237,7 @@ class PhoenixPharmaOptimized(PhoenixPharma):
             + "&mode=name_inside"
             + "&page=1&start=0",
         )
-        return self._parse_xml_dataset(response.text)
+        return self._parse_xml_dataset(response)
 
     def _search_for_product_optimized(self, product_name: str) -> Tuple[Optional[dict[str, Any]], Optional[list[str]]]:
         self.remember_action(f"Searching Phoenix for product '{product_name}' via optimized endpoint")
@@ -547,7 +547,7 @@ class PhoenixPharmaOptimized(PhoenixPharma):
         for query in queries:
             try:
                 response = self._request("GET", "dataset/order/load.php", query=query)
-                dataset = self._parse_xml_dataset(response.text)
+                dataset = self._parse_xml_dataset(response)
                 rows = dataset.get("row")
                 order_row: dict[str, Any] | None = None
 
@@ -812,7 +812,7 @@ class PhoenixPharmaOptimized(PhoenixPharma):
             data=self._build_commit_payload(self._current_order_row, items),
             content_type="application/x-www-form-urlencoded; charset=UTF-8",
         )
-        dataset = self._parse_xml_dataset(response.text)
+        dataset = self._parse_xml_dataset(response)
         row = dataset.get("row")
         if not isinstance(row, dict):
             raise ValueError("PhoenixPharma: Item commit did not return the expected order row")

@@ -91,7 +91,7 @@ class PhoenixPrepareForOrderTests(unittest.TestCase):
             [
                 mock.call.submit(),
                 mock.call.authenticated((
-                    "xpath", "//span[normalize-space(text())='Изход']/ancestor::a"
+                    "xpath", "//span[normalize-space(text())='Поръчка']/ancestor::a"
                 )),
             ],
         )
@@ -113,7 +113,7 @@ class PhoenixPrepareForOrderTests(unittest.TestCase):
         phoenix.open_url = mock.Mock()
         phoenix.store_temporary_screenshot = mock.Mock()
         authenticated_wait = mock.Mock()
-        authenticated_wait.until.side_effect = selenium_exceptions_module.TimeoutException()
+        authenticated_wait.until.side_effect = phoenix_module.TimeoutException()
 
         with mock.patch.object(
             phoenix_module, "WebDriverWait", side_effect=[mock.Mock(), authenticated_wait]

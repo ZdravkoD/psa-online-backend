@@ -41,8 +41,6 @@ class PhoenixPharma(BrowserCommon):
         else:
             raise ValueError("Pharmacy ID not found in Phoenix config")
 
-        # self.username = 'pc541dibo'
-        # self.password = 'pc541dibo'
 
         self.SEARCH_BOX_XPATH = "//fieldset[starts-with(@aria-label, 'Търсене в номенклатура')]//input[starts-with(@id,'textfield')" \
                                 + " and "\
@@ -133,11 +131,10 @@ class PhoenixPharma(BrowserCommon):
             raise last_error
 
         self.store_temporary_screenshot()
-        self.remember_action(f"Entering Phoenix username for pharmacy {self.username}")
+        self.remember_action("Entering Phoenix credentials")
         self.browser.find_element(By.CSS_SELECTOR, "input[name='loginUsername']").send_keys(self.username)
         self.browser.find_element(By.CSS_SELECTOR, "input[name='loginPasswordText']").click()
         self.browser.find_element(By.CSS_SELECTOR, "input[name='loginPasswordText']").send_keys(self.password)
-        self.store_temporary_screenshot()
         self.remember_action("Submitting Phoenix login form")
         WebDriverWait(self.browser, 20).until(
             EC.element_to_be_clickable((By.XPATH, "//span[normalize-space(text())='Въведи']/ancestor::a"))
@@ -145,7 +142,7 @@ class PhoenixPharma(BrowserCommon):
         self.remember_action("Waiting for Phoenix login to complete")
         try:
             WebDriverWait(self.browser, 30).until(
-                EC.element_to_be_clickable((By.XPATH, "//span[normalize-space(text())='Изход']/ancestor::a"))
+                EC.element_to_be_clickable((By.XPATH, "//span[normalize-space(text())='Поръчка']/ancestor::a"))
             )
         except TimeoutException as exc:
             self.store_temporary_screenshot()

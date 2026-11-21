@@ -75,36 +75,15 @@ class PhoenixOptimizedPayloadTests(unittest.TestCase):
                         phoenix._ensure_partner_loaded()
                     self.assertIsNone(phoenix._partner_row)
 
-    def test_request_marks_phoenix_api_call_as_xhr(self):
-        phoenix = phoenix_optimized_module.PhoenixPharmaOptimized.__new__(phoenix_optimized_module.PhoenixPharmaOptimized)
+    def test_partner_request_uses_phoenix_browser_client(self):
+        phoenix = object.__new__(phoenix_optimized_module.PhoenixPharmaOptimized)
         phoenix.browser = mock.Mock()
-        phoenix.browser.get_cookie.return_value = {"value": "session-id"}
-        response = mock.Mock()
-        request = mock.Mock(return_value=response)
-        missing = object()
-        original_request = getattr(phoenix_optimized_module.requests, "request", missing)
-        phoenix_optimized_module.requests.request = request
-
-        try:
-            result = phoenix._request("GET", "combo/partner.php", query="query=2075077")
-        finally:
-            if original_request is missing:
-                del phoenix_optimized_module.requests.request
-            else:
-                phoenix_optimized_module.requests.request = original_request
-
-        self.assertIs(result, response)
-        response.raise_for_status.assert_called_once_with()
-        request.assert_called_once_with(
-            method="GET",
-            url="https://b2b.phoenixpharma.bg/bg/build/production/BgShop/resources/php/combo/partner.php?query=2075077",
-            headers={
-                "Cookie": "PHPSESSID=session-id",
-                "X-Requested-With": "XMLHttpRequest",
-            },
-            data=None,
-            timeout=phoenix.REQUEST_TIMEOUT_SECONDS,
-        )
+        phoenix.browser.execute_async_script.return_value = (200, "<dataset/>")
+        self.assertEqual(phoenix._request("GET", "combo/partner.php", query="query=2075077"), "<dataset/>")
+        script, options = phoenix.browser.execute_async_script.call_args.args
+        self.assertIn("Ext.Ajax.request", script)
+        self.assertEqual(options["params"], {"query": "2075077"})
+        self.assertEqual(options["url"], "resources/php/combo/partner.php")
 
     def test_decode_order_item_rows_returns_list_for_single_row_xml(self):
         phoenix = phoenix_optimized_module.PhoenixPharmaOptimized.__new__(phoenix_optimized_module.PhoenixPharmaOptimized)
