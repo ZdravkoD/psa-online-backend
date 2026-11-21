@@ -1,4 +1,4 @@
-.PHONY: help start
+.PHONY: help start smoke-test
 
 default: help
 
@@ -13,3 +13,7 @@ install: ## Install the Azure Functions
 
 deploy-staging: ## Deploy the Azure Functions to staging
 	@func azure functionapp publish psa-online-functions --slot staging
+
+smoke-test: ## Run read-only smoke tests against a deployed Functions base URL
+	@test -n "$(BASE_URL)" || (echo "BASE_URL is required, e.g. make smoke-test BASE_URL=https://.../api" && exit 1)
+	@python smoke_test.py --base-url "$(BASE_URL)"

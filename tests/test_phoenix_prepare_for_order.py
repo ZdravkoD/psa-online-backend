@@ -1,0 +1,162 @@
+import importlib.util
+import sys
+import types
+import unittest
+from pathlib import Path
+from unittest import mock
+
+
+def ensure_module(name: str) -> types.ModuleType:
+    module = sys.modules.get(name)
+    if module is None:
+        module = types.ModuleType(name)
+        sys.modules[name] = module
+    return module
+
+
+ensure_module("pharmacy_distributors")
+ensure_module("pharmacy_distributors.common")
+
+models_module = ensure_module("pharmacy_distributors.common.models")
+models_module.ScrapedProductInfo = type("ScrapedProductInfo", (), {})
+
+browser_common_module = ensure_module("pharmacy_distributors.common.browser_common")
+
+
+class StubBrowserCommon:
+    def remember_action(self, action: str):
+        self.last_action = action
+
+    def store_temporary_screenshot(self):
+        return None
+
+
+browser_common_module.BrowserCommon = StubBrowserCommon
+
+configuration_module = ensure_module("configuration")
+configuration_common_module = ensure_module("configuration.common")
+configuration_common_module.DistributorConfig = type("DistributorConfig", (), {})
+
+ensure_module("selenium")
+ensure_module("selenium.webdriver")
+keys_module = ensure_module("selenium.webdriver.common.keys")
+keys_module.Keys = type("Keys", (), {"RETURN": "RETURN"})
+by_module = ensure_module("selenium.webdriver.common.by")
+by_module.By = type("By", (), {"XPATH": "xpath", "CSS_SELECTOR": "css"})
+ensure_module("selenium.webdriver.support")
+support_ui_module = ensure_module("selenium.webdriver.support.ui")
+support_ui_module.WebDriverWait = type("WebDriverWait", (), {})
+support_ec_module = ensure_module("selenium.webdriver.support.expected_conditions")
+support_ec_module.element_to_be_clickable = lambda locator: locator
+support_ec_module.presence_of_element_located = lambda locator: locator
+selenium_exceptions_module = ensure_module("selenium.common.exceptions")
+selenium_exceptions_module.ElementClickInterceptedException = type("ElementClickInterceptedException", (Exception,), {})
+selenium_exceptions_module.StaleElementReferenceException = type("StaleElementReferenceException", (Exception,), {})
+selenium_exceptions_module.TimeoutException = type("TimeoutException", (Exception,), {})
+selenium_exceptions_module.WebDriverException = type("WebDriverException", (Exception,), {})
+
+
+MODULE_PATH = Path(__file__).resolve().parents[1] / "scraper" / "scraper" / "pharmacy_distributors" / "phoenix" / "phoenix.py"
+SPEC = importlib.util.spec_from_file_location("phoenix_module", MODULE_PATH)
+phoenix_module = importlib.util.module_from_spec(SPEC)
+assert SPEC.loader is not None
+SPEC.loader.exec_module(phoenix_module)
+
+
+class PhoenixPrepareForOrderTests(unittest.TestCase):
+    def test_login_clicks_submit_and_waits_for_authenticated_toolbar(self):
+        phoenix = object.__new__(phoenix_module.PhoenixPharma)
+        phoenix.browser = mock.Mock()
+        phoenix.username = "test-user"
+        phoenix.password = "test-password"
+        phoenix.DUMMY_PAGE = "https://example.test/dummy"
+        phoenix.LOGIN_PAGE = "https://example.test/login"
+        phoenix.open_url = mock.Mock()
+        phoenix.remember_action = mock.Mock()
+        submit = mock.Mock()
+        submit_wait = mock.Mock()
+        submit_wait.until.return_value = submit
+        authenticated_wait = mock.Mock()
+        events = mock.Mock()
+        events.attach_mock(submit.click, "submit")
+        events.attach_mock(authenticated_wait.until, "authenticated")
+
+        with mock.patch.object(
+            phoenix_module, "WebDriverWait", side_effect=[submit_wait, authenticated_wait]
+        ):
+            phoenix.login()
+
+        self.assertEqual(
+            events.mock_calls,
+            [
+                mock.call.submit(),
+                mock.call.authenticated((
+                    "xpath", "//span[normalize-space(text())='Поръчка']/ancestor::a"
+                )),
+            ],
+        )
+        submit_wait.until.assert_called_once_with((
+            "xpath", "//span[normalize-space(text())='Въведи']/ancestor::a"
+        ))
+        phoenix.browser.find_element.return_value.send_keys.assert_has_calls([
+            mock.call("test-user"), mock.call("test-password")
+        ])
+        self.assertEqual(phoenix.browser.find_element.return_value.send_keys.call_count, 2)
+
+    def test_login_fails_if_authenticated_toolbar_never_appears(self):
+        phoenix = object.__new__(phoenix_module.PhoenixPharma)
+        phoenix.browser = mock.Mock()
+        phoenix.username = "test-user"
+        phoenix.password = "test-password"
+        phoenix.DUMMY_PAGE = "https://example.test/dummy"
+        phoenix.LOGIN_PAGE = "https://example.test/login"
+        phoenix.open_url = mock.Mock()
+        phoenix.store_temporary_screenshot = mock.Mock()
+        authenticated_wait = mock.Mock()
+        authenticated_wait.until.side_effect = phoenix_module.TimeoutException()
+        phoenix.browser.get_screenshot_as_png.return_value = b"test-png"
+        blobs = mock.Mock(output_container_name="test-output")
+        blob_module = types.SimpleNamespace(AzureBlobClient=lambda: blobs)
+        patcher = mock.patch.dict(sys.modules, {"files.azure_blob_client": blob_module})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        with mock.patch.object(
+            phoenix_module, "WebDriverWait", side_effect=[mock.Mock(), authenticated_wait]
+        ):
+            with self.assertRaisesRegex(RuntimeError, r"test-output/Phoenix_LoginTimeout_") as error:
+                phoenix.login()
+
+        self.assertEqual(phoenix.last_action, "Waiting for Phoenix login to complete")
+        name = str(error.exception).split("/")[-1]
+        blobs.upload_blob_to_output_container.assert_called_once_with(name, b"test-png")
+        phoenix.browser.execute_script.assert_called_once()
+
+    def test_prepare_for_order_fails_immediately_when_client_selection_fails(self):
+        phoenix = phoenix_module.PhoenixPharma.__new__(phoenix_module.PhoenixPharma)
+        phoenix.pharmacyID = "tolstoy"
+        phoenix.browser = mock.Mock()
+        phoenix.store_temporary_screenshot = mock.Mock()
+        phoenix.remember_action = mock.Mock()
+
+        clickable_element = mock.Mock()
+        phoenix.browser.find_element.return_value = clickable_element
+
+        wait_mask = mock.Mock()
+        wait_mask.until_not.return_value = True
+        wait_click_success = mock.Mock()
+        wait_click_success.until.return_value = clickable_element
+        wait_click_failure = mock.Mock()
+        wait_click_failure.until.side_effect = RuntimeError("not found")
+
+        with mock.patch.object(
+            phoenix_module,
+            "WebDriverWait",
+            side_effect=[wait_mask, wait_click_success, wait_mask, wait_mask, wait_click_success, wait_click_failure],
+        ):
+            with self.assertRaisesRegex(ValueError, "Phoenix client with pharmacy ID 'tolstoy' was not found or could not be selected."):
+                phoenix.prepare_for_order()
+
+
+if __name__ == "__main__":
+    unittest.main()
